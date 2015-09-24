@@ -2,6 +2,23 @@
 //! Futures and Promises
 //! ====================
 //!
+//! Quick example:
+//!
+//! ```
+//! # use ::promising_future::{future_promise};
+//! # use std::thread;
+//! let (fut, prom) = future_promise();
+//!
+//! // A time-consuming process
+//! thread::spawn(|| { thread::sleep_ms(100); prom.set(123) });
+//!
+//! // do something when the value is ready
+//! let fut = fut.then(|v| v.map(|v| v + 1));
+//!
+//! // Wait for the final result
+//! assert_eq!(fut.value(), Some(124));
+//! ```
+//!
 //! This module implements a pair of concepts: `Future`s - a read-only placeholder for a variable
 //! whose value may not yet be known, , and `Promise`s - a write-once container which sets the
 //! value.
@@ -168,6 +185,15 @@ impl<T: Send> Future<T> {
 
     /// Construct an already resolved `Future` with a value. It is equivalent to a `Future` whose
     /// `Promise` has already been fulfilled.
+    ///
+    /// ```
+    /// # use promising_future::{Future, Pollresult};
+    /// let fut = Future::with_value(123);
+    /// match fut.poll() {
+    ///    Pollresult::Resolved(Some(123)) => println!("ok"),
+    ///    _ => panic!("unexpected result"),
+    /// }
+    /// ```
     pub fn with_value(v: T) -> Future<T> {
         Future {
             mailbox: Arc::new(FutureInner::new(Some(Fulfilled(v)))),
@@ -177,6 +203,15 @@ impl<T: Send> Future<T> {
 
     /// Construct a resolved `Future` which will never have a value; it is equivalent to a `Future`
     /// whose `Promise` completed unfulfilled.
+    ///
+    /// ```
+    /// # use promising_future::{Future, Pollresult};
+    /// let fut = Future::<i32>::never();
+    /// match fut.poll() {
+    ///    Pollresult::Resolved(None) => println!("ok"),
+    ///    _ => panic!("unexpected result"),
+    /// }
+    /// ```
     pub fn never() -> Future<T> {
         Future {
             mailbox: Arc::new(FutureInner::new(Some(Unfulfilled))),
@@ -190,13 +225,23 @@ impl<T: Send> Future<T> {
     ///
     /// * `Unresolved(Future<T>)` - the `Future` is not yet resolved, so returns itself, or
     /// * `Resolved(Option<T>)` - the `Future` has been resolved, and may have a value.
+    ///
+    /// ```
+    /// # use promising_future::{Future, Pollresult};
+    /// # let fut = Future::with_value(123);
+    /// match fut.poll() {
+    ///   Pollresult::Unresolved(fut) => println!("unresolved future {:?}", fut),
+    ///   Pollresult::Resolved(None) => println!("resolved, no value"),
+    ///   Pollresult::Resolved(Some(v)) => println!("resolved, value {}", v),
+    /// }
+    /// ```
     pub fn poll(self) -> Pollresult<T> {
         let val = self.mailbox.val.lock().unwrap().take();
         match val {
             None => Unresolved(self),
             Some(v) => Resolved(v.into_option()),
         }
-    }   
+    }
 
     /// Block until the `Future` is resolved.
     ///
@@ -206,6 +251,15 @@ impl<T: Send> Future<T> {
     ///
     /// If the `Future` is already resolved - ie, has no corresponding `Promise` - then it will
     /// return immediately without blocking.
+    ///
+    /// ```
+    /// # use promising_future::Future;
+    /// # let fut = Future::with_value(123);
+    /// match fut.value() {
+    ///   Some(v) => println!("has value {}", v),
+    ///   None => println!("no value"),
+    /// }
+    /// ```
     pub fn value(self) -> Option<T> {
         let mb = self.mailbox;
         let mut val = mb.val.lock().unwrap();
@@ -240,7 +294,7 @@ impl<T: Send> Future<T> {
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, T: 'static, U: Send + 'static, S: Spawner
     {
         let (f, p) = future_promise();
-        
+
         spawner.spawn(move || if let Some(r) = func(self.value()) { p.set(r) });
 
         f
@@ -257,6 +311,15 @@ impl<T: Send> Future<T> {
     /// callback returns a value, not a `Future` it cannot be
     /// async. See `callback` or `chain` for more general async ways
     /// to apply a function to a `Future`.
+    ///
+    /// ```
+    /// # use promising_future::future_promise;
+    /// let (fut, prom) = future_promise();
+    ///
+    /// let fut = fut.then(|v| v.map(|v| v + 123));
+    /// prom.set(1);
+    /// assert_eq!(fut.value(), Some(124))
+    /// ```
     #[inline]
     pub fn then<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, U: Send + 'static
@@ -278,6 +341,20 @@ impl<T: Send> Future<T> {
     /// it leaving the promise unfulfilled.
     ///
     /// This is the most general form of a completion callback; see also `then` and `chain`.
+    ///
+    /// ```
+    /// # use promising_future::future_promise;
+    /// let (fut, prom) = future_promise();
+    ///
+    /// let fut = fut.callback(|v, p| {
+    ///    match v {
+    ///      None => (), // drop p
+    ///      Some(v) => p.set(v + 123),
+    ///    }
+    /// });
+    /// prom.set(1);
+    /// assert_eq!(fut.value(), Some(124))
+    /// ```
     pub fn callback<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>, Promise<U>) + Send + 'static, U: Send + 'static
     {
@@ -393,7 +470,7 @@ impl<T: Send> PromiseInner<T> {
             &PromiseInner::Future { ref future, .. } => future.upgrade().is_none(), // canceled if we lost our Future
         }
     }
-    
+
     fn set_val(&mut self, v: Promiseval<T>) {
         let mut current = PromiseInner::Empty;
         mem::swap(&mut current, self);
@@ -508,7 +585,7 @@ impl<T: Send> FutureStream<T> {
     pub fn outstanding(&self) -> usize {
         self.futures.len()
     }
-    
+
     /// Return any resolved `Future`s, but don't wait for more to resolve.
     pub fn poll(&mut self) -> Option<Future<T>> {
         if self.futures.is_empty() {
@@ -590,6 +667,11 @@ impl<T: Send> FromIterator<Future<T>> for FutureStream<T> {
 /// is dropped before the value is set, then the `Future` will never return a value. If the `Future`
 /// is dropped before fetching the value, or before the value is set, then the `Promise`'s value is
 /// lost.
+///
+/// ```
+/// # use promising_future::{Future, future_promise};
+/// let (fut, prom): (Future<i32>, _) = future_promise();
+/// ```
 pub fn future_promise<T: Send>() -> (Future<T>, Promise<T>) {
     let inner = Arc::new(FutureInner::new(None));
     let p = Promise::new(&inner);
@@ -682,7 +764,7 @@ mod test {
     use std::thread;
     use std::mem;
     use std::iter::FromIterator;
-    
+
     #[test]
     fn simple() {
         let (fut, prom) = future_promise();
@@ -701,7 +783,7 @@ mod test {
         };
 
         prom.set(1);
- 
+
         match fut.poll() {
             Unresolved(_) => panic!("expected resolved"),
             Resolved(v) => assert_eq!(v, Some(1)),
