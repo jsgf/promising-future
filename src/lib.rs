@@ -183,15 +183,6 @@ impl<T: Send> Future<T> {
             promise: None,
         }
     }
-    
-    /// Construct a `Future` which may or may not have a value, depending on the state of the
-    /// `Option`.
-    pub fn from_option(v: Option<T>) -> Future<T> {
-        match v {
-            Some(v) => Future::with_value(v),
-            None => Future::never(),
-        }
-    }
 
     /// Test to see if the `Future` is resolved yet.
     ///
@@ -320,6 +311,38 @@ impl<T: Send> Future<T> {
                 lk.set_waiter(key, waiter);
             },
             None => { let _ = waiter.send(key); }, // wake immediately
+        }
+    }
+}
+
+impl<T: Send> From<Option<T>> for Future<T> {
+    fn from(v: Option<T>) -> Future<T> {
+        match v {
+            None => Future::never(),
+            Some(v) => Future::with_value(v),
+        }
+    }
+}
+
+/// Blocking iterator for the value of a `Future`. Returns either 0 or 1 values.
+pub struct FutureIter<T: Send>(Option<Future<T>>);
+
+impl<T: Send> IntoIterator for Future<T> {
+    type Item = T;
+    type IntoIter = FutureIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        FutureIter(Some(self))
+    }
+}
+
+impl<T: Send> Iterator for FutureIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.0.take() {
+            None => None,
+            Some(fut) => fut.value()
         }
     }
 }
@@ -953,6 +976,18 @@ mod test {
         }
 
         assert_eq!(set.len(), 5);
+    }
+
+    #[test]
+    fn iter_none() {
+        let v: Vec<()> = Future::never().into_iter().collect();
+        assert_eq!(v.len(), 0);
+    }
+
+    #[test]
+    fn iter_one() {
+        let v: Vec<()> = Future::with_value(()).into_iter().collect();
+        assert_eq!(v.len(), 1);
     }
 
     #[cfg(feature = "threadpool")]
