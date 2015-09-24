@@ -57,6 +57,9 @@ use std::fmt::{self, Formatter, Debug};
 use std::collections::HashMap;
 use std::boxed::FnBox;
 
+#[cfg(feature = "threadpool")]
+extern crate threadpool;
+
 /// A trait for spawning threads.
 pub trait Spawner {
     /// Spawn a thread to run function `f`.
@@ -71,6 +74,16 @@ impl Spawner for ThreadSpawner {
         where F: FnOnce() + Send + 'static
     {
         let _ = thread::spawn(f);
+    }
+}
+
+/// An implementation of `Spawner` that spawns threads from a `ThreadPool`.
+#[cfg(feature = "threadpool")]
+impl Spawner for threadpool::ThreadPool {
+    fn spawn<F>(&self, f: F)
+        where F: FnOnce() + Send + 'static
+    {
+        self.execute(f)
     }
 }
 
@@ -940,5 +953,36 @@ mod test {
         }
 
         assert_eq!(set.len(), 5);
+    }
+
+    #[cfg(feature = "threadpool")]
+    mod threadpool {
+        use super::super::*;
+        use threadpool::ThreadPool;
+        use std::thread;
+
+        #[test]
+        fn tp_chain_with() {
+            let pool = ThreadPool::new(5);
+            let (fut, prom) = future_promise();
+
+            let fut = fut.chain_with(|_| { thread::sleep_ms(100); Some(()) }, pool);
+            prom.set(());
+            assert_eq!(fut.value(), Some(()));
+        }
+
+        #[test]
+        fn tp_all_with() {
+            let pool = ThreadPool::new(5);
+            let (fut, prom) = future_promise();
+            let v = vec![Future::with_value(1), fut, Future::with_value(2), Future::never(), Future::with_value(3)];
+
+            pool.execute(|| {
+                thread::sleep_ms(100);
+                prom.set(4);
+            });
+
+            assert_eq!(all_with(v, pool).value(), Some(vec![1, 2, 3, 4]));
+        }
     }
 }

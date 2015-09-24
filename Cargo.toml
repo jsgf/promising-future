@@ -7,3 +7,10 @@ description = "Implementation of Promise/Future pairs."
 repository = "https://github.com/jsgf/promising-future"
 readme = "README.md"
 keywords = ["async", "asynchronous", "promise", "future"]
+
+[features]
+default = [ "threadpool" ]
+
+[dependencies.threadpool]
+version = "0.1"
+optional = true
