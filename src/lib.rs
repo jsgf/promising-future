@@ -459,7 +459,10 @@ impl<T: Send> PromiseInner<T> {
     fn set_waiter(&mut self, key: usize, waittx: Sender<usize>) {
         match self {
             &mut PromiseInner::Future { ref mut waiter, .. } => { assert!(waiter.is_none()); *waiter = Some((key, waittx)) },
-            _ => panic!("trying to set waiter for non-Future PromiseInner"),
+            _ => {
+                // promise already set, just wake now
+                let _ = waittx.send(key);
+            },
         }
     }
 
