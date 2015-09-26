@@ -1,6 +1,6 @@
 [package]
 name = "promising-future"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Jeremy Fitzhardinge <jeremy@goop.org>"]
 license = "MIT"
 description = "Implementation of Promise/Future pairs."
