@@ -13,7 +13,7 @@
 //! thread::spawn(|| { thread::sleep_ms(100); prom.set(123) });
 //!
 //! // do something when the value is ready
-//! let fut = fut.then(|v| v.map(|v| v + 1));
+//! let fut = fut.then(|v| v + 1);
 //!
 //! // Wait for the final result
 //! assert_eq!(fut.value(), Some(124));
@@ -316,31 +316,45 @@ impl<T: Send> Future<T> {
     /// # use promising_future::future_promise;
     /// let (fut, prom) = future_promise();
     ///
-    /// let fut = fut.then(|v| v.map(|v| v + 123));
+    /// let fut = fut.then_opt(|v| v.map(|v| v + 123));
     /// prom.set(1);
     /// assert_eq!(fut.value(), Some(124))
     /// ```
     #[inline]
-    pub fn then<F, U>(self, func: F) -> Future<U>
+    pub fn then_opt<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, U: Send + 'static
     {
         self.callback(move |v, p| if let Some(r) = func(v) { p.set(r) })
     }
 
+    /// Set synchronous callback
+    ///
+    /// Simplest form of callback. This is only called if the promise
+    /// is fulfilled, and may only allow a promise to be fulfilled.
+    pub fn then<F, U>(self, func: F) -> Future<U>
+        where F: FnOnce(T) -> U + Send + 'static, U: Send + 'static
+    {
+        self.then_opt(move |v| v.map(func))
+    }
+
     /// Set a callback to run in the `Promise`'s context.
     ///
-    /// This function sets a general purpose callback which is called when a `Promise` is
-    /// completed. It is called in the `Promise`'s context, so if it is long-running it will block
-    /// whatever thread that is. (If the `Future` already has a value, it is this thread.)
+    /// This function sets a general purpose callback which is called
+    /// when a `Promise` is completed. It is called in the `Promise`'s
+    /// context, so if it is long-running it will block whatever
+    /// thread that is. (If the `Future` already has a value, it is
+    /// this thread.)
     ///
-    /// The value passed to the callback is an `Option` - if it is `None` it means the promise was
-    /// unfulfilled.
+    /// The value passed to the callback is an `Option` - if it is
+    /// `None` it means the promise was unfulfilled.
     ///
-    /// The callback is passed a new `Promise<U>` which is paired with the `Future<U>` this function
-    /// returns; the callback may either set a value on it, pass it somewhere else, or simply drop
-    /// it leaving the promise unfulfilled.
+    /// The callback is passed a new `Promise<U>` which is paired with
+    /// the `Future<U>` this function returns; the callback may either
+    /// set a value on it, pass it somewhere else, or simply drop it
+    /// leaving the promise unfulfilled.
     ///
-    /// This is the most general form of a completion callback; see also `then` and `chain`.
+    /// This is the most general form of a completion callback; see
+    /// also `then` and `chain`.
     ///
     /// ```
     /// # use promising_future::future_promise;
@@ -558,7 +572,7 @@ impl<T: Send> Debug for Promise<T> {
 /// It implements an iterator over completed `Future`s, and can be constructed from an iterator of
 /// `Future`s.
 pub struct FutureStream<T: Send> {
-    tx: Option<Sender<usize>>,
+    tx: Sender<usize>,
     rx: Receiver<usize>,
     idx: usize,
     futures: HashMap<usize, Future<T>>,
@@ -568,7 +582,7 @@ impl<T: Send> FutureStream<T> {
     pub fn new() -> FutureStream<T> {
         let (tx, rx) = channel();
         FutureStream {
-            tx: Some(tx),
+            tx: tx,
             rx: rx,
             idx: 0,
             futures: HashMap::new(),
@@ -579,7 +593,7 @@ impl<T: Send> FutureStream<T> {
     pub fn add(&mut self, fut: Future<T>) {
         let idx = self.idx;
         self.idx += 1;
-        let tx = self.tx.as_ref().unwrap().clone();
+        let tx = self.tx.clone();
         fut.add_waiter(idx, tx);
         self.futures.insert(idx, fut);
     }
@@ -952,13 +966,26 @@ mod test {
     fn then_chain() {
         let (fut, prom): (Future<i32>, _) = future_promise();
 
-        let fut = fut.then(|v| v.map(|v| v + 1));
-        let fut = fut.then(|v| v.map(|v| v + 2));
-        let fut = fut.then(|v| v.map(|v| v + 3));
+        let fut = fut.then(|v| v + 1);
+        let fut = fut.then(|v| v + 2);
+        let fut = fut.then(|v| v + 3);
 
         prom.set(1);
 
         assert_eq!(fut.value(), Some(1 + 1 + 2 + 3));
+    }
+
+    #[test]
+    fn then_opt_chain() {
+        let (fut, prom): (Future<i32>, _) = future_promise();
+
+        let fut = fut.then_opt(|v| v.map(|v| v + 1));
+        let fut = fut.then_opt(|_| None::<u32>);
+        let fut = fut.then_opt(|v| v.map(|v| v + 3));
+
+        prom.set(1);
+
+        assert_eq!(fut.value(), None);
     }
 
     #[test]
