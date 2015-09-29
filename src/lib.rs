@@ -286,11 +286,11 @@ impl<T: Send> Future<T> {
     pub fn chain<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, T: 'static, U: Send + 'static
     {
-        self.chain_with(func, ThreadSpawner)
+        self.chain_with(func, &ThreadSpawner)
     }
 
     /// As with `chain`, but pass a `Spawner` to control how the thread is created.
-    pub fn chain_with<F, U, S>(self, func: F, spawner: S) -> Future<U>
+    pub fn chain_with<F, U, S>(self, func: F, spawner: &S) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, T: 'static, U: Send + 'static, S: Spawner
     {
         let (f, p) = future_promise();
@@ -1113,7 +1113,7 @@ mod test {
             let pool = ThreadPool::new(5);
             let (fut, prom) = future_promise();
 
-            let fut = fut.chain_with(|_| { thread::sleep_ms(100); Some(()) }, pool);
+            let fut = fut.chain_with(|_| { thread::sleep_ms(100); Some(()) }, &pool);
             prom.set(());
             assert_eq!(fut.value(), Some(()));
         }
