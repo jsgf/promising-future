@@ -147,13 +147,6 @@ impl<T> FutureInner<T> {
             val: Mutex::new(v),
         }
     }
-
-    // Called from Promise when setting value
-    fn set_val(&self, v: Promiseval<T>) {
-        let mut flk = self.val.lock().unwrap();
-        *flk = Some(v);
-        self.cv.notify_one();
-    }
 }
 
 impl<T: Debug> Debug for FutureInner<T> {
@@ -375,13 +368,17 @@ impl<T: Send> Future<T> {
     {
         let (fut, prom) = future_promise();
 
-        match self.poll() {
-            Resolved(v) => func(v, prom), // already done, so apply callback now
+        // Lock order: Value, then...
+        let mut val = self.mailbox.val.lock().unwrap();
 
-            Unresolved(me) => {
+        match val.take() {
+            Some(v) => func(v.into_option(), prom), // already done, so apply callback now
+
+            None => {
                 // set function to be called in promise context
-                match me.promise.and_then(|p| p.upgrade()) {
+                match self.promise.and_then(|p| p.upgrade()) {
                     Some(cb) => {
+                        // ...PromiseInner lock
                         let mut inner = cb.lock().unwrap();
 
                         inner.set_callback(move |v| func(v.into_option(), prom))
@@ -489,22 +486,21 @@ impl<T: Send> PromiseInner<T> {
         }
     }
 
-    fn set_val(&mut self, v: Promiseval<T>) {
+    // Return the Future if there is one, otherwise return None. Replaces these with Empty.
+    fn get_future(&mut self) -> Option<(Weak<FutureInner<T>>, Option<(usize, Sender<usize>)>)> {
         let mut current = PromiseInner::Empty;
-        mem::swap(&mut current, self);
+
+        mem::swap(self, &mut current);
 
         match current {
-            PromiseInner::Empty => (), // ignore if already set - used by Drop
             PromiseInner::Future { future, waiter } => {
-                if let Some(future) = future.upgrade() {
-                    future.set_val(v);
-                }
-
-                if let Some((idx, tx)) = waiter {
-                    let _ = tx.send(idx);
-                }
+                *self = PromiseInner::Empty;
+                Some((future, waiter))
             },
-            PromiseInner::Callback(cb) => cb(v),
+            PromiseInner::Empty | PromiseInner::Callback(_) => {
+                mem::swap(self, &mut current);
+                None
+            },
         }
     }
 }
@@ -536,9 +532,62 @@ impl<T: Send> Promise<T> {
     }
 
     fn set_inner(&mut self, v: Promiseval<T>) {
-        let mut inner = self.0.lock().unwrap();
+        // Big retry loop
+        loop {
+            // The lock order is FutureInner then PromiseInner, but we need to take the PromiseInner
+            // lock to find the Future, so first take the PromiseInner lock and get the Future if
+            // there is one.
+            let future = {
+                let mut inner = self.0.lock().unwrap();
+                inner.get_future()
+            };
 
-        inner.set_val(v)
+            // PromiseInner lock released; in this window Future::callback() could take the
+            // PromiseInner lock and set a callback. We'll need to re-check once we re-take the
+            // lock.
+
+            match future {
+                Some((future, waiter)) => {
+                    if let Some(future) = future.upgrade() {
+                        let mut flk = future.val.lock().unwrap(); // take Future value
+                        let plk = self.0.lock().unwrap();
+
+                        // We released PromiseInner, so the Future could have set a callback in the
+                        // meantime. Make sure the state is still as we expect.
+                        match *plk {
+                            PromiseInner::Empty => (), // OK
+                            PromiseInner::Callback(_) => continue, // it's a callback now; try again
+                            PromiseInner::Future { .. } => panic!("PromiseInner regained a Future?"),
+                        };
+
+                        // OK, still a Future, set the value and wake up any waiters.
+                        *flk = Some(v);
+                        future.cv.notify_one();
+
+                        // Send notification if anyone is waiting for that.
+                        if let Some((idx, tx)) = waiter {
+                            let _ = tx.send(idx);
+                        }
+                    }
+                },
+
+                None =>  {
+                    // No Future - either callback or nothing
+                    let mut plk = self.0.lock().unwrap();
+                    let mut current = PromiseInner::Empty;
+
+                    mem::swap(&mut *plk, &mut current);
+                    match current {
+                        PromiseInner::Empty => (),          // ignore if already set - used by Drop
+                        PromiseInner::Future { .. } => panic!("Future should have already been handled"),
+                        PromiseInner::Callback(cb) => cb(v),
+                    }
+                }
+            }
+
+            // Finished
+            break;
+        }
     }
 
     /// Fulfill the `Promise` by resolving the corresponding `Future` with a value.
@@ -1134,6 +1183,50 @@ mod test {
             Ok(n) => assert_eq!(n, ITERS),
             Err(_) => panic!("promiser failed"),
         }
+    }
+
+    #[test]
+    fn stress_fp_callback() {
+        use std::sync::atomic::{ATOMIC_USIZE_INIT, Ordering};
+        use std::sync::Arc;
+
+        const ITERS: u32 = 10000000;
+        let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); ((i, f), (i, p)) }).unzip();
+        let futcount = Arc::new(ATOMIC_USIZE_INIT);
+
+        let futurer = {
+            let futcount = futcount.clone();
+
+            thread::spawn(move || {
+                for (idx, fut) in futs.into_iter() {
+                    let futcount = futcount.clone();
+
+                    let _: Future<()> = fut.callback(move |v, _| {
+                        match v {
+                            Some(i) => { assert_eq!(idx, i); futcount.fetch_add(1, Ordering::Relaxed); },
+                            None => panic!("Lost value for idx {}", idx),
+                        }
+                    });
+                }
+            })
+        };
+
+        let promiser = thread::spawn(move || {
+            let mut count = 0;
+            for (i, p) in proms.into_iter() {
+                p.set(i);
+                count += 1;
+            }
+            count
+        });
+
+        let _ = futurer.join();
+        match promiser.join() {
+            Ok(n) => assert_eq!(n, ITERS),
+            Err(_) => panic!("promiser failed"),
+        }
+
+        assert_eq!(futcount.load(Ordering::Relaxed), ITERS as usize);
     }
 
     #[test]
