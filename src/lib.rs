@@ -340,10 +340,10 @@ impl<T: Send> Future<T> {
     /// Set a callback to run in the `Promise`'s context.
     ///
     /// This function sets a general purpose callback which is called
-    /// when a `Promise` is completed. It is called in the `Promise`'s
+    /// when a `Future` is resolved. It is called in the `Promise`'s
     /// context, so if it is long-running it will block whatever
-    /// thread that is. (If the `Future` already has a value, it is
-    /// this thread.)
+    /// thread that is. (If the `Future` is already resolved, it is
+    /// the calling thread.)
     ///
     /// The value passed to the callback is an `Option` - if it is
     /// `None` it means the promise was unfulfilled.
@@ -354,7 +354,8 @@ impl<T: Send> Future<T> {
     /// leaving the promise unfulfilled.
     ///
     /// This is the most general form of a completion callback; see
-    /// also `then` and `chain`.
+    /// also `then` and `chain` for simpler interfaces which are often
+    /// all that's needed..
     ///
     /// ```
     /// # use promising_future::future_promise;
