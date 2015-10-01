@@ -1103,6 +1103,75 @@ mod test {
         assert_eq!(v.len(), 1);
     }
 
+    #[test]
+    fn stress_fp() {
+        const ITERS: u32 = 10000000;
+        let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); ((i, f), (i, p)) }).unzip();
+
+        let futurer = thread::spawn(move || {
+            let mut count = 0;
+            for (i, f) in futs.into_iter() {
+                assert_eq!(f.value(), Some(i));
+                count += 1;
+            };
+            count
+        });
+
+        let promiser = thread::spawn(move || {
+            let mut count = 0;
+            for (i, p) in proms.into_iter() {
+                p.set(i);
+                count += 1;
+            }
+            count
+        });
+
+        match futurer.join() {
+            Ok(n) => assert_eq!(n, ITERS),
+            Err(_) => panic!("futurer failed"),
+        }
+        match promiser.join() {
+            Ok(n) => assert_eq!(n, ITERS),
+            Err(_) => panic!("promiser failed"),
+        }
+    }
+
+    #[test]
+    fn stress_fp_waiter() {
+        use std::collections::BTreeSet;
+
+        const ITERS: u32 = 100000;
+        let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); (f, (i, p)) }).unzip();
+
+        let promiser = thread::spawn(move || {
+            let mut count = 0;
+            for (i, p) in proms.into_iter() {
+                p.set(i);
+                count += 1;
+            }
+            count
+        });
+
+        let count = {
+            let waiter = FutureStream::from_iter(futs);
+            assert_eq!(waiter.outstanding(), ITERS as usize);
+            let mut set: BTreeSet<_> = (0..ITERS).collect();
+
+            let mut count = 0;
+            for i in waiter.into_iter() {
+                assert!(set.remove(&i));
+                count += 1;
+            }
+            count
+        };
+
+        assert_eq!(count, ITERS);
+        match promiser.join() {
+            Ok(n) => assert_eq!(n, ITERS),
+            Err(_) => panic!("promiser failed"),
+        }
+    }
+
     #[cfg(feature = "threadpool")]
     mod threadpool {
         use super::super::*;
