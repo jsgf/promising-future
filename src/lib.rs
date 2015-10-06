@@ -625,7 +625,37 @@ pub struct FutureStream<T: Send> {
 
 /// Waiter for `Future`s in a `FutureStream`.
 ///
-/// A singleton waiter for `Future`s, associated with a specific `FutureStream`.
+/// A singleton waiter for `Future`s, associated with a specific `FutureStream`. This may be used in
+/// a multithreaded environment to wait for `Futures` to resolve while other threads fulfill
+/// `Promises` and add new `Future`s to the `FutureStream`.
+///
+/// ```
+/// # use ::promising_future::{Future,FutureStream};
+/// # let future = Future::with_value(());
+/// let mut fs = FutureStream::new();
+/// fs.add(future);
+/// // ...
+/// let mut waiter = fs.waiter();
+/// while let Some(future) = waiter.wait() {
+///     match future.value() {
+///       None => (),         // Future unfulfilled
+///       Some(val) => val,
+///     }
+/// }
+/// ```
+///
+/// It may also be converted into an `Iterator` over the values yielded by resolved `Futures`
+/// (unfulfilled `Promises` are ignored).
+///
+/// ```
+/// # use ::promising_future::{Future,FutureStream};
+/// # let fut1 = Future::with_value(());
+/// let mut fs = FutureStream::new();
+/// fs.add(fut1);
+/// for val in fs.waiter().into_iter() {
+///    // ...
+/// }
+/// ```
 pub struct FutureStreamWaiter<'a, T: Send + 'a> {
     fs: &'a FutureStream<T>,
     rx: Option<Receiver<usize>>,
@@ -670,7 +700,7 @@ impl<T: Send> FutureStream<T> {
     }
 
     /// Return a singleton `FutureStreamWaiter`. If one already exists, block until it is released.
-    pub fn waiter(&self) -> FutureStreamWaiter<T> {
+    pub fn waiter<'fs>(&'fs self) -> FutureStreamWaiter<'fs, T> {
         let mut inner = self.inner.1.lock().unwrap();
 
         loop {
@@ -682,7 +712,7 @@ impl<T: Send> FutureStream<T> {
     }
 
     /// Return a singleton `FutureStreamWaiter`. Returns `None` if one already exists.
-    pub fn try_waiter(&self) -> Option<FutureStreamWaiter<T>> {
+    pub fn try_waiter<'fs>(&'fs self) -> Option<FutureStreamWaiter<'fs, T>> {
         let mut inner = self.inner.1.lock().unwrap();
 
         match inner.rx.take() {
@@ -711,8 +741,8 @@ impl<T: Send> FutureStream<T> {
     }
 }
 
-impl<'a, T: Send> FutureStreamWaiter<'a, T> {
-    fn new(fs: &'a FutureStream<T>, rx: Receiver<usize>) -> FutureStreamWaiter<'a, T> {
+impl<'fs, T: Send> FutureStreamWaiter<'fs, T> {
+    fn new(fs: &'fs FutureStream<T>, rx: Receiver<usize>) -> FutureStreamWaiter<'fs, T> {
         FutureStreamWaiter { fs: fs, rx: Some(rx) }
     }
 
@@ -744,7 +774,7 @@ impl<'a, T: Send> FutureStreamWaiter<'a, T> {
     }
 }
 
-impl<'a, T: Send> Drop for FutureStreamWaiter<'a, T> {
+impl<'fs, T: Send> Drop for FutureStreamWaiter<'fs, T> {
     fn drop(&mut self) {
         self.fs.return_waiter(self.rx.take().unwrap())
     }
@@ -755,9 +785,9 @@ impl<'a, T: Send> Drop for FutureStreamWaiter<'a, T> {
 /// resolve to no value are discarded.
 pub struct FutureStreamIter<'a, T: Send + 'a>(FutureStreamWaiter<'a, T>);
 
-impl<'a, T: Send + 'a> IntoIterator for FutureStreamWaiter<'a, T> {
+impl<'fs, T: Send + 'fs> IntoIterator for FutureStreamWaiter<'fs, T> {
     type Item = T;
-    type IntoIter = FutureStreamIter<'a, T>;
+    type IntoIter = FutureStreamIter<'fs, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         FutureStreamIter(self)
@@ -808,7 +838,7 @@ impl<T: Send> FromIterator<Future<T>> for FutureStream<T> {
 ///
 /// ```
 /// # use promising_future::{Future, future_promise};
-/// let (fut, prom): (Future<i32>, _) = future_promise();
+/// let (fut, prom) = future_promise::<i32>();
 /// ```
 pub fn future_promise<T: Send>() -> (Future<T>, Promise<T>) {
     let inner = Arc::new(FutureInner::new(None));
@@ -1382,6 +1412,23 @@ mod test {
         match wt.join() {
             Ok(n) => assert_eq!(n, COUNT),
             Err(e) => panic!("err {:?}", e),
+        }
+    }
+
+    #[test]
+    fn double_waiter() {
+        let fs: FutureStream<()> = FutureStream::new();
+
+        {
+            let _w1 = match fs.try_waiter() {
+                None => panic!("couldn't get waiter"),
+                Some(w) => w,
+            };
+
+            match fs.try_waiter() {
+                None => (),
+                Some(w) => panic!("got double waiter"),
+            };
         }
     }
 
