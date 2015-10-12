@@ -1,6 +1,8 @@
 Promising Future
 ================
 
+[![Build Status](https://travis-ci.org/jsgf/promising-future.svg?branch=master)](https://travis-ci.org/jsgf/promising-future)
+
 This crate implements `Promise`s and `Future`s, where a `Future`
 represents an unknown value, and a `Promise` determines what that
 value is.

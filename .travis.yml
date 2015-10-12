@@ -1,3 +1,11 @@
+env:
+  global:
+    - secure: GIFB2QsCTuPrZM/T4MgmoWpmx89kyik1w29SEOynH0MDnFGvSPtv1sxIBpchqjCdrFt1wn+8hrLQdZId6EnPyxSn9qP9DQjeeLB6ZM/WpB+fS4ulV+EpJRvESDFK++J0sGAsJPrxpcmmRiGNQvUm3navodjpzeqRyWgY2DKqbxAAJg5LBoM8c1RM6RZ6G+YLFW2Su38S2pes7zbBxuZxHc+O1YMVPQmBAjGVCJZEGXsJffWMzZObHaT6ERFtvJHbncBXF2kzJt/HDADe3Cqco0vqHqi+syaueDtkwdHcdq0HOsBoo//Gf8InyXZy/vJx34Ne9v+hOya2WA1qG4E1pvlnbolwMSLYxaUGBZIcIVtra+r2o/hQY2+MOxvnI1UcWQGNsdlti1kibY8z8oSgX7U55Z7+hRa8oHJNpxeydUT4s4kNVXrf3G4jFZA4aeXfwtNp00dYssOpAKbX68V9D8KZWrNcwT3YAWYibjyDu24C5j0FF5P2sTBZlzn7OBxlCwujnU0RYU9Q6hoCSOMHMw2sO96hlW1UkZ0Cd+PhvGg9TUs9ZZPJG7KIu8VNcG2GGmrF/44oSgASNW0/BOPIZENtWiGhIofyFC5TCk3Fm+XsvK4ESRxVP2Z28Bsij7DzMOOs5loFYTWPk3mSqHonGBJmlVZ/qkgrilucKx47eOE=
+
 language: rust
 rust:
   - nightly
+
+after_script:
+  - curl http://www.rust-ci.org/artifacts/put?t=$RUSTCI_TOKEN | sh
+
