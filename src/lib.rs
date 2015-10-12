@@ -1260,7 +1260,7 @@ mod test {
 
     #[test]
     fn stress_fp() {
-        const ITERS: u32 = 10000000;
+        const ITERS: u32 = 100000;
         let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); ((i, f), (i, p)) }).unzip();
 
         let futurer = thread::spawn(move || {
@@ -1296,7 +1296,7 @@ mod test {
         use std::sync::atomic::{ATOMIC_USIZE_INIT, Ordering};
         use std::sync::Arc;
 
-        const ITERS: u32 = 10000000;
+        const ITERS: u32 = 100000;
         let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); ((i, f), (i, p)) }).unzip();
         let futcount = Arc::new(ATOMIC_USIZE_INIT);
 
@@ -1339,7 +1339,7 @@ mod test {
     fn stress_fp_waiter() {
         use std::collections::BTreeSet;
 
-        const ITERS: u32 = 100000;
+        const ITERS: u32 = 10000;
         let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); (f, (i, p)) }).unzip();
 
         let promiser = thread::spawn(move || {
