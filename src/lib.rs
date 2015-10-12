@@ -1427,7 +1427,7 @@ mod test {
 
             match fs.try_waiter() {
                 None => (),
-                Some(w) => panic!("got double waiter"),
+                Some(_) => panic!("got double waiter"),
             };
         }
     }
