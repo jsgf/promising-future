@@ -20,7 +20,7 @@
 //! ```
 //!
 //! This module implements a pair of concepts: `Future`s - a read-only placeholder for a variable
-//! whose value may not yet be known, , and `Promise`s - a write-once container which sets the
+//! whose value may not yet be known, and `Promise`s - a write-once container which sets the
 //! value.
 //!
 //! A `Future` may either be "resolved" or "unresolved". An unresolved `Future` still has a pending
@@ -935,6 +935,12 @@ mod test {
     use std::thread;
     use std::mem;
     use std::iter::FromIterator;
+    use std::time::Duration;
+
+    // back compat
+    fn sleep_ms(ms: u32) {
+        thread::sleep(Duration::new(ms as u64 / 1000, ((ms as u64 * 1000_000) % 1000_000_000) as u32))
+    }
 
     #[test]
     fn simple() {
@@ -966,7 +972,7 @@ mod test {
         let (fut, prom) = future_promise();
 
         let t = thread::spawn(|| {
-            thread::sleep_ms(100);
+            sleep_ms(100);
             prom.set(1);
         });
 
@@ -983,7 +989,7 @@ mod test {
         let fut = fut.chain(|x| x.map(|x| x + 2));
         let fut = fut.chain(|x| x.map(|x| x + 3));
 
-        thread::sleep_ms(100);
+        sleep_ms(100);
         prom.set(1);
 
         assert_eq!(fut.value(), Some(7));
@@ -1023,7 +1029,7 @@ mod test {
         let (fut, prom) = future_promise();
 
         let t = thread::spawn(|| {
-            thread::sleep_ms(100);
+            sleep_ms(100);
             mem::drop(prom);
         });
 
@@ -1037,7 +1043,7 @@ mod test {
         let (fut, prom): (Future<i32>, _) = future_promise();
 
         let t = thread::spawn(|| {
-            thread::sleep_ms(100);
+            sleep_ms(100);
             mem::drop(prom);
         });
 
@@ -1074,7 +1080,7 @@ mod test {
         let v = vec![Future::with_value(1), fut, Future::with_value(2), Future::never(), Future::with_value(3)];
 
         let t = thread::spawn(|| {
-            thread::sleep_ms(100);
+            sleep_ms(100);
             prom.set(4);
         });
 
@@ -1089,7 +1095,7 @@ mod test {
         let v = vec![Future::with_value(1), fut, Future::with_value(2), Future::never(), Future::with_value(3)];
 
         let t = thread::spawn(|| {
-            thread::sleep_ms(100);
+            sleep_ms(100);
             mem::drop(prom);
         });
 
@@ -1157,7 +1163,7 @@ mod test {
         for i in 1..10 {
             let (fut, prom) = future_promise();
 
-            thread::spawn(move || { thread::sleep_ms(i * 100); prom.set(i) });
+            thread::spawn(move || { sleep_ms(i * 100); prom.set(i) });
 
             v.push(fut)
         }
@@ -1178,7 +1184,7 @@ mod test {
             let (fut, prom) = future_promise();
 
             thread::spawn(move || {
-                thread::sleep_ms(i * 100);
+                sleep_ms(i * 100);
                 if i >= 5 { prom.set(i) }
             });
 
@@ -1204,7 +1210,119 @@ mod test {
             let (fut, prom) = future_promise();
 
             set.insert(i);
-            thread::spawn(move || { thread::sleep_ms(i * 100); prom.set(i) });
+            thread::spawn(move || { sleep_ms(i * 100); prom.set(i) });
+
+            v.push(fut)
+        }
+
+        let stream = FutureStream::from_iter(v);
+        let mut unfulfilled = 0;
+        loop {
+            match stream.wait() {
+                None => break,
+                Some(w) =>
+                    match w.poll() {
+                        Unresolved(_) => panic!("unresolved future from wait"),
+                        Resolved(None) => unfulfilled += 1,
+                        Resolved(Some(w)) => {
+                            set.remove(&w);
+                            println!("got {:?}", w);
+                        }
+                    }
+            }
+        }
+
+        assert!(set.is_empty());
+        assert_eq!(set.len(), unfulfilled);
+    }
+
+    #[test]
+    fn wait_abandoned() {
+        use std::collections::BTreeSet;
+        let mut v = Vec::new();
+        let mut set = BTreeSet::new();
+
+        for i in 1..10 {
+            let (fut, prom) = future_promise();
+
+            set.insert(i);
+            thread::spawn(move || {
+                sleep_ms(i * 100);
+                if i < 5 { prom.set(i) }
+            });
+
+            v.push(fut)
+        }
+
+        let stream = FutureStream::from_iter(v);
+        let mut unfulfilled = 0;
+        loop {
+            match stream.wait() {
+                None => break,
+                Some(w) =>
+                    match w.poll() {
+                        Unresolved(_) => panic!("unresolved future from wait"),
+                        Resolved(None) => unfulfilled += 1,
+                        Resolved(Some(w)) => {
+                            assert!(w < 5);
+                            set.remove(&w);
+                            println!("got {:?}", w);
+                        }
+                    }
+            }
+        }
+
+        assert_eq!(set.len(), 5);
+        assert_eq!(set.len(), unfulfilled);
+    }
+
+    #[test]
+    fn wait_all_abandoned() {
+        use std::collections::BTreeSet;
+        let mut v = Vec::new();
+        let mut set = BTreeSet::new();
+
+        for i in 1..10 {
+            let (fut, _prom) = future_promise::<u32>();
+
+            set.insert(i);
+            thread::spawn(move || {
+                println!("spawn {}", i);
+                sleep_ms(i * 100);
+            });
+
+            v.push(fut)
+        }
+
+        let stream = FutureStream::from_iter(v);
+        let mut unfulfilled = 0;
+        loop {
+            match stream.wait() {
+                None => break,
+                Some(w) =>
+                    match w.poll() {
+                        Unresolved(_) => panic!("unresolved future from wait"),
+                        Resolved(None) => unfulfilled += 1,
+                        Resolved(Some(w)) => panic!("fulfilled promise {}", w),
+                    }
+            }
+        }
+
+        assert_eq!(set.len(), 9);
+        assert_eq!(set.len(), unfulfilled);
+    }
+
+    #[test]
+    fn wait_stream_all() {
+        use std::collections::BTreeSet;
+        let mut v = Vec::new();
+        let mut set = BTreeSet::new();
+
+        for i in 1..10 {
+            let (fut, prom) = future_promise();
+
+            set.insert(i);
+            thread::spawn(move || { sleep_ms(i * 100); prom.set(i) });
 
             v.push(fut)
         }
@@ -1219,7 +1337,7 @@ mod test {
     }
 
     #[test]
-    fn wait_abandoned() {
+    fn wait_stream_abandoned() {
         use std::collections::BTreeSet;
         let mut v = Vec::new();
         let mut set = BTreeSet::new();
@@ -1229,7 +1347,7 @@ mod test {
 
             set.insert(i);
             thread::spawn(move || {
-                thread::sleep_ms(i * 100);
+                sleep_ms(i * 100);
                 if i < 5 { prom.set(i) }
             });
 
@@ -1244,6 +1362,33 @@ mod test {
         }
 
         assert_eq!(set.len(), 5);
+    }
+
+    #[test]
+    fn wait_stream_all_abandoned() {
+        use std::collections::BTreeSet;
+        let mut v = Vec::new();
+        let mut set = BTreeSet::new();
+
+        for i in 1..10 {
+            let (fut, _prom) = future_promise();
+
+            set.insert(i);
+            thread::spawn(move || {
+                println!("spawn {}", i);
+                sleep_ms(i * 100);
+            });
+
+            v.push(fut)
+        }
+
+        let stream = FutureStream::from_iter(v);
+        for w in stream.waiter().into_iter() {
+            set.remove(&w);
+            println!("got {}", w);
+        }
+
+        assert_eq!(set.len(), 9);
     }
 
     #[test]
@@ -1401,7 +1546,7 @@ mod test {
                     let (f, p) = future_promise();
                     stream.add(f);
                     p.set(());
-                    thread::sleep_ms(2);
+                    sleep_ms(2);
                 }
             })
         };
@@ -1436,14 +1581,14 @@ mod test {
     mod threadpool {
         use super::super::*;
         use threadpool::ThreadPool;
-        use std::thread;
+        use super::sleep_ms;
 
         #[test]
         fn tp_chain_with() {
             let pool = ThreadPool::new(5);
             let (fut, prom) = future_promise();
 
-            let fut = fut.chain_with(|_| { thread::sleep_ms(100); Some(()) }, &pool);
+            let fut = fut.chain_with(|_| { sleep_ms(100); Some(()) }, &pool);
             prom.set(());
             assert_eq!(fut.value(), Some(()));
         }
@@ -1455,7 +1600,7 @@ mod test {
             let v = vec![Future::with_value(1), fut, Future::with_value(2), Future::never(), Future::with_value(3)];
 
             pool.execute(|| {
-                thread::sleep_ms(100);
+                sleep_ms(100);
                 prom.set(4);
             });
 
