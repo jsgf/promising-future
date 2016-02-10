@@ -5,12 +5,14 @@
 //! Quick example:
 //!
 //! ```
-//! # use ::promising_future::{future_promise};
+//! # use ::promising_future::future_promise;
+//! # use std::time::Duration;
+//! # #[allow(unused_variables)]
 //! # use std::thread;
 //! let (fut, prom) = future_promise();
 //!
 //! // A time-consuming process
-//! thread::spawn(|| { thread::sleep_ms(100); prom.set(123) });
+//! thread::spawn(|| { thread::sleep(Duration::from_millis(100)); prom.set(123) });
 //!
 //! // do something when the value is ready
 //! let fut = fut.then(|v| v + 1);
@@ -593,6 +595,26 @@ impl<T: Send> Promise<T> {
 
     /// Return true if the corresponding `Future` no longer exists, and so any value set would be
     /// discarded.
+    ///
+    /// ```
+    /// # use ::promising_future::future_promise;
+    /// # use std::thread;
+    /// # use std::mem;
+    /// # struct State; impl State { fn new() -> State { State } fn perform_action(&mut self) -> Option<u32> { None } }
+    /// let (fut, prom) = future_promise();
+    ///
+    /// thread::spawn(move || {
+    ///     let mut s = State::new();
+    ///     while !prom.canceled() {
+    ///         match s.perform_action() {
+    ///             None => (),
+    ///             Some(res) => { prom.set(res); break },
+    ///         }
+    ///     }
+    /// });
+    /// // ...
+    /// mem::drop(fut);
+    /// ```
     pub fn canceled(&self) -> bool {
         self.0.lock().unwrap().canceled()
     }
@@ -632,7 +654,7 @@ pub struct FutureStream<T: Send> {
 /// ```
 /// # use ::promising_future::{Future,FutureStream};
 /// # let future = Future::with_value(());
-/// let mut fs = FutureStream::new();
+/// let fs = FutureStream::new();
 /// fs.add(future);
 /// // ...
 /// let mut waiter = fs.waiter();
@@ -650,7 +672,7 @@ pub struct FutureStream<T: Send> {
 /// ```
 /// # use ::promising_future::{Future,FutureStream};
 /// # let fut1 = Future::with_value(());
-/// let mut fs = FutureStream::new();
+/// let fs = FutureStream::new();
 /// fs.add(fut1);
 /// for val in fs.waiter().into_iter() {
 ///    // ...
