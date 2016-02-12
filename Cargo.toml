@@ -5,7 +5,7 @@ authors = ["Jeremy Fitzhardinge <jeremy@goop.org>"]
 license = "MIT"
 description = "Implementation of Promise/Future pairs."
 repository = "https://github.com/jsgf/promising-future"
-documentation = "https://jsgf.github.io/promising-future/promising_future/index.html"
+documentation = "https://jsgf.github.io/promising-future/doc/promising_future/index.html"
 readme = "README.md"
 keywords = ["async", "asynchronous", "promise", "future"]
 

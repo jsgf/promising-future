@@ -1,11 +1,18 @@
+language: rust
+
 env:
   global:
-    - secure: GIFB2QsCTuPrZM/T4MgmoWpmx89kyik1w29SEOynH0MDnFGvSPtv1sxIBpchqjCdrFt1wn+8hrLQdZId6EnPyxSn9qP9DQjeeLB6ZM/WpB+fS4ulV+EpJRvESDFK++J0sGAsJPrxpcmmRiGNQvUm3navodjpzeqRyWgY2DKqbxAAJg5LBoM8c1RM6RZ6G+YLFW2Su38S2pes7zbBxuZxHc+O1YMVPQmBAjGVCJZEGXsJffWMzZObHaT6ERFtvJHbncBXF2kzJt/HDADe3Cqco0vqHqi+syaueDtkwdHcdq0HOsBoo//Gf8InyXZy/vJx34Ne9v+hOya2WA1qG4E1pvlnbolwMSLYxaUGBZIcIVtra+r2o/hQY2+MOxvnI1UcWQGNsdlti1kibY8z8oSgX7U55Z7+hRa8oHJNpxeydUT4s4kNVXrf3G4jFZA4aeXfwtNp00dYssOpAKbX68V9D8KZWrNcwT3YAWYibjyDu24C5j0FF5P2sTBZlzn7OBxlCwujnU0RYU9Q6hoCSOMHMw2sO96hlW1UkZ0Cd+PhvGg9TUs9ZZPJG7KIu8VNcG2GGmrF/44oSgASNW0/BOPIZENtWiGhIofyFC5TCk3Fm+XsvK4ESRxVP2Z28Bsij7DzMOOs5loFYTWPk3mSqHonGBJmlVZ/qkgrilucKx47eOE=
+  - GH_REPO: github.com/jsgf/promising-future.git
+  - DOCS_OUT: target/doc
+  - secure: ITOi0WODfU//dMvdVcPURXYzaW0G/iDowSToql4zsihOqArRqNKKwQ2Tuv8eZDN64He/94X/Ux1NtBmwJ8hjGjlUm20lyRxDXPcLFEYR453FriRbNU+RILomHeJNEwoxIpWKCwWm/3xc0Man/r8Ew1F+T7ki1I+rK1mNtYhzAhpu/h8lw4L0eF4/SI2HsQIGNI7tka+QNv3UZmEX+ryCwe4ofPTMkquCJEOyw4Fb7EnjFyGmB8gUDNn411ZoRMvw8AmURRwYWt0Bkac0DKO/zVy4WRzEQMDREdRnhzEUpA9gOOqmB8S2AKcuaKO9/PdpMfREkHKbS3uHfIniBDqLYUdWwIZ8t2rMosaHDveL4hwV1vSZxWRKKCUTMsJtgZt5VrOCJjSV3tb5xgT0wsGuKtLsQn4wyufyTNfoec/rXhfrbrM0toiDBc7LYjH44gDhbh0ONRl1RdlESoy1HCq0KTXQb+yuz5e5VX22Skf67nkpkt2Bu6OU2Xb6IysAiQoNMBNv8W3YGYUC0PpWJDhe8j8GSCOExd/uwpe5L2QI0LY/itUzHv+scuvzltryWtlqpOgYzkmt3Y1+PT1r8FEmL4Y8i142ntVn2GZmijGcWyw64nJvdDX/2jqTPeTzxQIJNDwD+GSNVxzdHBnGazFEofsw28fK9ZJTWH1Pyz5shf0=
 
-language: rust
 rust:
-  - nightly
+- nightly
 
-after_script:
-  - curl http://www.rust-ci.org/artifacts/put?t=$RUSTCI_TOKEN | sh
+script:
+- cargo build --release --verbose
+- cargo test --verbose
+- cargo doc --no-deps --verbose
 
+after_success:
+- ./.travis-update-gh-pages.sh || echo Update pages failed $?
