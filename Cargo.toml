@@ -1,6 +1,6 @@
 [package]
 name = "promising-future"
-version = "0.1.7"
+version = "0.2.0"
 authors = ["Jeremy Fitzhardinge <jeremy@goop.org>"]
 license = "MIT/Apache-2.0"
 description = "Implementation of Promise/Future pairs."
@@ -13,5 +13,5 @@ keywords = ["async", "asynchronous", "promise", "future"]
 default = [ "threadpool" ]
 
 [dependencies.threadpool]
-version = "0.1"
+version = "0.2"
 optional = true
