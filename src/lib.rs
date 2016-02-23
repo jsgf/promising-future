@@ -924,8 +924,11 @@ pub fn any<T, I>(futures: I) -> Option<T>
 ///
 /// This function is non-blocking; the blocking occurs within a thread. Pass a type which implements
 /// `Spawner` which is used to produce the thread.
-pub fn all_with<T, I, S>(futures: I, spawner: S) -> Future<Vec<T>>
-    where I: IntoIterator<Item=Future<T>> + Send + 'static, T: Send + 'static, S: Spawner
+pub fn all_with<T, I, S, F>(futures: I, spawner: S) -> Future<F>
+    where S: Spawner,
+          T: Send + 'static,
+          I: IntoIterator<Item=Future<T>> + Send + 'static,
+          F: FromIterator<T> + Send + 'static
 {
     let (f, p) = future_promise();
     let stream = FutureStream::from_iter(futures);
@@ -944,8 +947,10 @@ pub fn all_with<T, I, S>(futures: I, spawner: S) -> Future<Vec<T>>
 ///
 /// This function is non-blocking; the blocking occurs within a thread. This uses
 /// `std::thread::spawn()` to create the thread needed to block.
-pub fn all<T, I>(futures: I) -> Future<Vec<T>>
-    where I: IntoIterator<Item=Future<T>> + Send + 'static, T: Send + 'static
+pub fn all<T, I, F>(futures: I) -> Future<F>
+    where T: Send + 'static,
+          I: IntoIterator<Item=Future<T>> + Send + 'static,
+          F: FromIterator<T> + Send + 'static
 {
     all_with(futures, ThreadSpawner)
 }
