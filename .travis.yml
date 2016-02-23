@@ -7,6 +7,8 @@ env:
   - secure: ITOi0WODfU//dMvdVcPURXYzaW0G/iDowSToql4zsihOqArRqNKKwQ2Tuv8eZDN64He/94X/Ux1NtBmwJ8hjGjlUm20lyRxDXPcLFEYR453FriRbNU+RILomHeJNEwoxIpWKCwWm/3xc0Man/r8Ew1F+T7ki1I+rK1mNtYhzAhpu/h8lw4L0eF4/SI2HsQIGNI7tka+QNv3UZmEX+ryCwe4ofPTMkquCJEOyw4Fb7EnjFyGmB8gUDNn411ZoRMvw8AmURRwYWt0Bkac0DKO/zVy4WRzEQMDREdRnhzEUpA9gOOqmB8S2AKcuaKO9/PdpMfREkHKbS3uHfIniBDqLYUdWwIZ8t2rMosaHDveL4hwV1vSZxWRKKCUTMsJtgZt5VrOCJjSV3tb5xgT0wsGuKtLsQn4wyufyTNfoec/rXhfrbrM0toiDBc7LYjH44gDhbh0ONRl1RdlESoy1HCq0KTXQb+yuz5e5VX22Skf67nkpkt2Bu6OU2Xb6IysAiQoNMBNv8W3YGYUC0PpWJDhe8j8GSCOExd/uwpe5L2QI0LY/itUzHv+scuvzltryWtlqpOgYzkmt3Y1+PT1r8FEmL4Y8i142ntVn2GZmijGcWyw64nJvdDX/2jqTPeTzxQIJNDwD+GSNVxzdHBnGazFEofsw28fK9ZJTWH1Pyz5shf0=
 
 rust:
+- stable
+- beta
 - nightly
 
 script:
@@ -15,4 +17,4 @@ script:
 - cargo doc --no-deps --verbose
 
 after_success:
-- ./.travis-update-gh-pages.sh || echo Update pages failed $?
+- if [ "$TRAVIS_RUST_VERSION" = stable ]; then ./.travis-update-gh-pages.sh || echo Update pages failed $?; fi
