@@ -1,4 +1,3 @@
-#![feature(fnbox)]
 //! Futures and Promises
 //! ====================
 //!
@@ -74,7 +73,18 @@ use std::mem;
 use std::thread;
 use std::fmt::{self, Formatter, Debug};
 use std::collections::HashMap;
-use std::boxed::FnBox;
+
+trait FnBox<P> {
+    fn call_box(self: Box<Self>, param: P);
+}
+
+impl<F: FnOnce(P), P> FnBox<P> for F {
+    fn call_box(self: Box<F>, param: P) {
+        (*self)(param)
+    }
+}
+
+type Thunk<'a, P> = Box<FnBox<P> + Send + 'a>;
 
 #[cfg(feature = "threadpool")]
 extern crate threadpool;
@@ -455,7 +465,7 @@ enum PromiseInner<T: Send> {
         future: Weak<FutureInner<T>>,
         waiter: Option<(usize, Sender<usize>)>,
     },
-    Callback(Box<FnBox(Promiseval<T>) + Send>),     // callback that will handle the value
+    Callback(Thunk<'static, Promiseval<T>>),
 }
 
 impl<T: Send> PromiseInner<T> {
@@ -578,7 +588,7 @@ impl<T: Send> Promise<T> {
                     match mem::replace(&mut *plk, PromiseInner::Empty) {
                         PromiseInner::Empty => (),          // ignore if already set - used by Drop
                         PromiseInner::Future { .. } => panic!("Future should have already been handled"),
-                        PromiseInner::Callback(cb) => cb(v),
+                        PromiseInner::Callback(cb) => cb.call_box(v),
                     }
                 }
             }
@@ -1314,7 +1324,7 @@ mod test {
 
             set.insert(i);
             thread::spawn(move || {
-                println!("spawn {}", i);
+                //println!("spawn {}", i);
                 sleep_ms(i * 100);
             });
 
@@ -1402,7 +1412,7 @@ mod test {
 
             set.insert(i);
             thread::spawn(move || {
-                println!("spawn {}", i);
+                //println!("spawn {}", i);
                 sleep_ms(i * 100);
             });
 
