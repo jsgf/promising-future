@@ -2,7 +2,7 @@
 name = "promising-future"
 version = "0.1.7"
 authors = ["Jeremy Fitzhardinge <jeremy@goop.org>"]
-license = "MIT"
+license = "MIT/Apache-2.0"
 description = "Implementation of Promise/Future pairs."
 repository = "https://github.com/jsgf/promising-future"
 documentation = "https://jsgf.github.io/promising-future/doc/promising_future/index.html"
