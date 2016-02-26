@@ -1,5 +1,4 @@
-Promising Future
-================
+# Promising Future
 
 [![Build Status](https://travis-ci.org/jsgf/promising-future.svg?branch=master)](https://travis-ci.org/jsgf/promising-future)
 
