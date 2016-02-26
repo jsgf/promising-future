@@ -68,15 +68,17 @@
 //! rather than have its output simply discarded.
 
 use std::sync::{Mutex, Condvar, Arc, Weak};
-use std::sync::mpsc::{Sender, Receiver, channel};
 use std::iter::FromIterator;
 use std::mem;
 use std::thread;
 use std::fmt::{self, Formatter, Debug};
-use std::collections::HashMap;
 
 #[cfg(test)]
 mod test;
+
+mod futurestream;
+use futurestream::WaiterNotify;
+pub use futurestream::{FutureStream, FutureStreamIter, FutureStreamWaiter};
 
 // FnBox workaround adapted from threadpool
 trait FnBox<P> {
@@ -84,9 +86,7 @@ trait FnBox<P> {
 }
 
 impl<F: FnOnce(P), P> FnBox<P> for F {
-    fn call_box(self: Box<F>, param: P) {
-        (*self)(param)
-    }
+    fn call_box(self: Box<F>, param: P) { (*self)(param) }
 }
 
 type Thunk<'a, P> = Box<FnBox<P> + Send + 'a>;
@@ -329,7 +329,8 @@ impl<T: Send> Future<T> {
     /// ```
     #[inline]
     pub fn then_opt<F, U>(self, func: F) -> Future<U>
-        where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, U: Send + 'static
+        where F: FnOnce(Option<T>) -> Option<U> + Send + 'static,
+              U: Send + 'static
     {
         self.callback(move |v, p| if let Some(r) = func(v) { p.set(r) })
     }
@@ -339,7 +340,8 @@ impl<T: Send> Future<T> {
     /// Simplest form of callback. This is only called if the promise
     /// is fulfilled, and may only allow a promise to be fulfilled.
     pub fn then<F, U>(self, func: F) -> Future<U>
-        where F: FnOnce(T) -> U + Send + 'static, U: Send + 'static
+        where F: FnOnce(T) -> U + Send + 'static,
+              U: Send + 'static
     {
         self.then_opt(move |v| v.map(func))
     }
@@ -378,7 +380,8 @@ impl<T: Send> Future<T> {
     /// assert_eq!(fut.value(), Some(124))
     /// ```
     pub fn callback<F, U>(self, func: F) -> Future<U>
-        where F: FnOnce(Option<T>, Promise<U>) + Send + 'static, U: Send + 'static
+        where F: FnOnce(Option<T>, Promise<U>) + Send + 'static,
+              U: Send + 'static
     {
         let (fut, prom) = future_promise();
 
@@ -406,14 +409,14 @@ impl<T: Send> Future<T> {
     }
 
     // Called from FutureStream to add it as our waiter.
-    fn add_waiter(&self, key: usize, waiter: Sender<usize>) {
+    fn add_waiter(&self, notify: WaiterNotify) {
         let p = self.promise.as_ref().and_then(|p| p.upgrade());
         match p {
             Some(mx) => {
                 let mut lk = mx.lock().unwrap();
-                lk.set_waiter(key, waiter);
+                lk.set_waiter(notify);
             },
-            None => { let _ = waiter.send(key); }, // wake immediately
+            None => notify.notify(),    // no future, notify now
         }
     }
 }
@@ -465,9 +468,9 @@ enum PromiseInner<T: Send> {
     Empty,                      // no content
     Future {                    // future which will receive a value
         future: Weak<FutureInner<T>>,
-        waiter: Option<(usize, Sender<usize>)>,
+        waiter: Option<WaiterNotify>,
     },
-    Callback(Thunk<'static, Promiseval<T>>),
+    Callback(Thunk<'static, Promiseval<T>>),    // Callback which wants the value
 }
 
 impl<T: Send> PromiseInner<T> {
@@ -482,13 +485,14 @@ impl<T: Send> PromiseInner<T> {
         *self = PromiseInner::Callback(Box::new(cb))
     }
 
-    fn set_waiter(&mut self, key: usize, waittx: Sender<usize>) {
+    // Someone wants to know when this Promise is fulfilled.
+    fn set_waiter(&mut self, notify: WaiterNotify) {
         match self {
-            &mut PromiseInner::Future { ref mut waiter, .. } => { assert!(waiter.is_none()); *waiter = Some((key, waittx)) },
-            _ => {
-                // promise already set, just wake now
-                let _ = waittx.send(key);
+            &mut PromiseInner::Future { ref mut waiter, .. } => {
+                assert!(waiter.is_none());
+                *waiter = Some(notify);
             },
+            _ => notify.notify(),   // promise already set, just wake now
         }
     }
 
@@ -500,20 +504,9 @@ impl<T: Send> PromiseInner<T> {
         }
     }
 
-    // Return the Future if there is one, otherwise return None. Replaces these with Empty.
-    fn get_future(&mut self) -> Option<(Weak<FutureInner<T>>, Option<(usize, Sender<usize>)>)> {
-        let mut current = mem::replace(self, PromiseInner::Empty);
-
-        match current {
-            PromiseInner::Future { future, waiter } => {
-                *self = PromiseInner::Empty;
-                Some((future, waiter))
-            },
-            PromiseInner::Empty | PromiseInner::Callback(_) => {
-                mem::swap(self, &mut current);
-                None
-            },
-        }
+    // Return the innards, replacing them with Empty.
+    fn get_future(&mut self) -> PromiseInner<T> {
+        mem::replace(self, PromiseInner::Empty)
     }
 }
 
@@ -543,9 +536,12 @@ impl<T: Send> Promise<T> {
         Promise(Arc::new(Mutex::new(PromiseInner::with_future(fut))))
     }
 
+    // Set the value on the inner promise
     fn set_inner(&mut self, v: Promiseval<T>) {
         // Big retry loop
         loop {
+            use PromiseInner::*;
+
             // The lock order is FutureInner then PromiseInner, but we need to take the PromiseInner
             // lock to find the Future, so first take the PromiseInner lock and get the Future if
             // there is one.
@@ -557,14 +553,14 @@ impl<T: Send> Promise<T> {
             // PromiseInner lock released; in this window Future::callback() could take the
             // PromiseInner lock and set a callback. We'll need to re-check once we re-take the
             // lock.
-
             match future {
-                Some((future, waiter)) => {
+                Future { future, waiter } => {
+                    // If we have a Future then set the value, otherwise just dump it
                     if let Some(future) = future.upgrade() {
                         let mut flk = future.val.lock().unwrap(); // take Future value
                         let plk = self.0.lock().unwrap();
 
-                        // We released PromiseInner, so the Future could have set a callback in the
+                        // We released PromiseInner lock, so the Future could have set a callback in the
                         // meantime. Make sure the state is still as we expect.
                         match *plk {
                             PromiseInner::Empty => (), // OK
@@ -577,22 +573,15 @@ impl<T: Send> Promise<T> {
                         future.cv.notify_one();
 
                         // Send notification if anyone is waiting for that.
-                        if let Some((idx, tx)) = waiter {
-                            let _ = tx.send(idx);
+                        if let Some(notify) = waiter {
+                            notify.notify()
                         }
                     }
                 },
 
-                None =>  {
-                    // No Future - either callback or nothing
-                    let mut plk = self.0.lock().unwrap();
+                Callback(cb) => cb.call_box(v), // no future, but there is a callback
 
-                    match mem::replace(&mut *plk, PromiseInner::Empty) {
-                        PromiseInner::Empty => (),          // ignore if already set - used by Drop
-                        PromiseInner::Future { .. } => panic!("Future should have already been handled"),
-                        PromiseInner::Callback(cb) => cb.call_box(v),
-                    }
-                }
+                Empty => (),                    // Already set - used by Drop
             }
 
             // Finished
@@ -644,224 +633,6 @@ impl<T: Send> Debug for Promise<T> {
     }
 }
 
-/// Stream of multiple `Future`s
-///
-/// A `FutureStream` can be used to wait for multiple `Future`s, and return them incrementally as
-/// they are resolved.
-///
-/// It implements an iterator over completed `Future`s, and can be constructed from an iterator of
-/// `Future`s.
-#[derive(Clone)]
-pub struct FutureStream<T: Send> {
-    tx: Sender<usize>,
-    inner: Arc<(Condvar, Mutex<FutureStreamInner<T>>)>,
-}
-
-/// Waiter for `Future`s in a `FutureStream`.
-///
-/// A singleton waiter for `Future`s, associated with a specific `FutureStream`. This may be used in
-/// a multithreaded environment to wait for `Futures` to resolve while other threads fulfill
-/// `Promises` and add new `Future`s to the `FutureStream`.
-///
-/// ```
-/// # use ::promising_future::{Future,FutureStream};
-/// # let future = Future::with_value(());
-/// let fs = FutureStream::new();
-/// fs.add(future);
-/// // ...
-/// let mut waiter = fs.waiter();
-/// while let Some(future) = waiter.wait() {
-///     match future.value() {
-///       None => (),         // Future unfulfilled
-///       Some(val) => val,
-///     }
-/// }
-/// ```
-///
-/// It may also be converted into an `Iterator` over the values yielded by resolved `Futures`
-/// (unfulfilled `Promises` are ignored).
-///
-/// ```
-/// # use ::promising_future::{Future,FutureStream};
-/// # let fut1 = Future::with_value(());
-/// let fs = FutureStream::new();
-/// fs.add(fut1);
-/// for val in fs.waiter().into_iter() {
-///    // ...
-/// }
-/// ```
-pub struct FutureStreamWaiter<'a, T: Send + 'a> {
-    fs: &'a FutureStream<T>,
-    rx: Option<Receiver<usize>>,
-}
-
-struct FutureStreamInner<T: Send> {
-    idx: usize,                         // current index
-    futures: HashMap<usize, Future<T>>, // map index to future
-
-    rx: Option<Receiver<usize>>,        // index receiver (if not passed to a waiter)
-}
-
-impl<T: Send> FutureStream<T> {
-    pub fn new() -> FutureStream<T> {
-        let (tx, rx) = channel();
-        let inner = FutureStreamInner {
-            idx: 0,
-            futures: HashMap::new(),
-
-            rx: Some(rx),
-        };
-
-        FutureStream {
-            tx: tx,
-            inner: Arc::new((Condvar::new(), Mutex::new(inner))),
-        }
-    }
-
-    /// Add a `Future` to the stream.
-    pub fn add(&self, fut: Future<T>) {
-        let mut inner = self.inner.1.lock().unwrap();
-        let idx = inner.idx;
-
-        inner.idx += 1;
-        fut.add_waiter(idx, self.tx.clone());
-        inner.futures.insert(idx, fut);
-    }
-
-    /// Return number of outstanding `Future`s.
-    pub fn outstanding(&self) -> usize {
-        self.inner.1.lock().unwrap().futures.len()
-    }
-
-    /// Return a singleton `FutureStreamWaiter`. If one already exists, block until it is released.
-    pub fn waiter<'fs>(&'fs self) -> FutureStreamWaiter<'fs, T> {
-        let mut inner = self.inner.1.lock().unwrap();
-
-        loop {
-            match inner.rx.take() {
-                None => { inner = self.inner.0.wait(inner).unwrap() },
-                Some(rx) => return FutureStreamWaiter::new(self, rx),
-            }
-        }
-    }
-
-    /// Return a singleton `FutureStreamWaiter`. Returns `None` if one already exists.
-    pub fn try_waiter<'fs>(&'fs self) -> Option<FutureStreamWaiter<'fs, T>> {
-        let mut inner = self.inner.1.lock().unwrap();
-
-        match inner.rx.take() {
-            None => None,
-            Some(rx) => Some(FutureStreamWaiter::new(self, rx)),
-        }
-    }
-
-    fn return_waiter(&self, rx: Receiver<usize>) {
-        let mut inner = self.inner.1.lock().unwrap();
-
-        assert!(inner.rx.is_none());
-        inner.rx = Some(rx);
-        self.inner.0.notify_one();
-    }
-
-    /// Return a resolved `Future` if any, but don't wait for more to resolve.
-    pub fn poll(&self) -> Option<Future<T>> {
-        self.waiter().poll()
-    }
-
-    /// Return resolved `Future`s. Blocks if there are outstanding `Futures` which are not yet
-    /// resolved. Returns `None` when there are no more outstanding `Future`s.
-    pub fn wait(&self) -> Option<Future<T>> {
-        self.waiter().wait()
-    }
-}
-
-impl<'fs, T: Send> FutureStreamWaiter<'fs, T> {
-    fn new(fs: &'fs FutureStream<T>, rx: Receiver<usize>) -> FutureStreamWaiter<'fs, T> {
-        FutureStreamWaiter { fs: fs, rx: Some(rx) }
-    }
-
-    /// Return resolved `Future`s. Blocks if there are outstanding `Futures` which are not yet
-    /// resolved. Returns `None` when there are no more outstanding `Future`s.
-    pub fn wait(&mut self) -> Option<Future<T>> {
-        if { let l = self.fs.inner.1.lock().unwrap(); l.futures.is_empty() } {
-            None
-        } else {
-            match self.rx.as_ref().unwrap().recv() {
-                Ok(idx) => { let mut l = self.fs.inner.1.lock().unwrap(); l.futures.remove(&idx) },
-                Err(_) => None,
-            }
-        }
-    }
-
-    /// Return any resolved `Future`s, but don't wait for more to resolve.
-    pub fn poll(&mut self) -> Option<Future<T>> {
-        let mut inner = self.fs.inner.1.lock().unwrap();
-
-        if inner.futures.is_empty() {
-            None
-        } else {
-            match self.rx.as_ref().unwrap().try_recv() {
-                Ok(idx) => inner.futures.remove(&idx),
-                Err(_) => None,
-            }
-        }
-    }
-}
-
-impl<'fs, T: Send> Drop for FutureStreamWaiter<'fs, T> {
-    fn drop(&mut self) {
-        self.fs.return_waiter(self.rx.take().unwrap())
-    }
-}
-
-/// Iterator for completed `Future`s in a `FutureStream`. The iterator incrementally returns values
-/// from resolved `Future`s, blocking while there are no unresolved `Future`s. `Future`s which
-/// resolve to no value are discarded.
-pub struct FutureStreamIter<'a, T: Send + 'a>(FutureStreamWaiter<'a, T>);
-
-impl<'fs, T: Send + 'fs> IntoIterator for FutureStreamWaiter<'fs, T> {
-    type Item = T;
-    type IntoIter = FutureStreamIter<'fs, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        FutureStreamIter(self)
-    }
-}
-
-impl<'a, T: Send + 'a> Iterator for FutureStreamIter<'a, T> {
-    type Item = T;
-
-    // Get next Future resolved with value, if any
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.0.wait() {
-                None => return None,
-                Some(fut) => {
-                    match fut.poll() {
-                        Unresolved(_) => panic!("FutureStreamWait.wait returned unresolved Future"),
-                        Resolved(v@Some(_)) => return v,
-                        Resolved(None) => (),
-                    }
-                },
-            }
-        }
-    }
-}
-
-impl<T: Send> FromIterator<Future<T>> for FutureStream<T> {
-    // XXX lazily consume input iterator?
-    fn from_iter<I>(iterator: I) -> Self
-        where I: IntoIterator<Item=Future<T>>
-    {
-        let stream = FutureStream::new();
-        for f in iterator.into_iter() {
-            stream.add(f)
-        }
-
-        stream
-    }
-}
-
 /// Construct a `Future`/`Promise` pair.
 ///
 /// A `Future` represents a value which may not yet be known. A `Promise` is some process which will
@@ -899,12 +670,12 @@ pub fn any<T, I>(futures: I) -> Option<T>
     let stream = FutureStream::new();
 
     // XXX TODO need way to select on futures.into_iter() and stream.wait()...
-    for fut in futures.into_iter() {
+    for fut in futures {
         // Check to see if future has already resolved; if it has a value return it immediately, or
         // discard it if it never will. Otherwise, if its unresolved, add it to the stream.
         match fut.poll() {
             Unresolved(fut) => stream.add(fut), // add to stream
-            Resolved(v@Some(_)) => return v,      // return value
+            Resolved(v@Some(_)) => return v,    // return value
             Resolved(None) => (),               // skip
         };
 

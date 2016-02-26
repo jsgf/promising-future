@@ -396,7 +396,7 @@ fn wait_stream_all() {
     }
 
     let stream = FutureStream::from_iter(v);
-    for w in stream.waiter().into_iter() {
+    for w in stream.waiter() {
         set.remove(&w);
         println!("got {:?}", w);
     }
@@ -423,7 +423,7 @@ fn wait_stream_abandoned() {
     }
 
     let stream = FutureStream::from_iter(v);
-    for w in stream.waiter().into_iter() {
+    for w in stream.waiter() {
         assert!(w < 5);
         set.remove(&w);
         println!("got {}", w);
@@ -451,7 +451,7 @@ fn wait_stream_all_abandoned() {
     }
 
     let stream = FutureStream::from_iter(v);
-    for w in stream.waiter().into_iter() {
+    for w in stream.waiter() {
         set.remove(&w);
         println!("got {}", w);
     }
