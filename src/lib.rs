@@ -141,12 +141,11 @@ enum Promiseval<T> {
 
 use self::Promiseval::*;
 
-impl<T> Promiseval<T> {
-    #[inline]
-    fn into_option(self) -> Option<T> {
+impl<T> Into<Option<T>> for Promiseval<T> {
+    fn into(self) -> Option<T> {
         match self {
             Fulfilled(v) => Some(v),
-            Unfulfilled => None,
+            Unfulfilled => None
         }
     }
 }
@@ -249,7 +248,7 @@ impl<T: Send> Future<T> {
         let val = self.mailbox.val.lock().unwrap().take();
         match val {
             None => Unresolved(self),
-            Some(v) => Resolved(v.into_option()),
+            Some(v) => Resolved(v.into()),
         }
     }
 
@@ -278,7 +277,7 @@ impl<T: Send> Future<T> {
             val = mb.cv.wait(val).unwrap();
         }
 
-        val.take().expect("val None").into_option()
+        val.take().expect("val None").into()
     }
 
     /// Chain two `Future`s.
@@ -389,7 +388,7 @@ impl<T: Send> Future<T> {
         let mut val = self.mailbox.val.lock().unwrap();
 
         match val.take() {
-            Some(v) => func(v.into_option(), prom), // already done, so apply callback now
+            Some(v) => func(v.into(), prom), // already done, so apply callback now
 
             None => {
                 // set function to be called in promise context
@@ -398,7 +397,7 @@ impl<T: Send> Future<T> {
                         // ...PromiseInner lock
                         let mut inner = cb.lock().unwrap();
 
-                        inner.set_callback(move |v| func(v.into_option(), prom))
+                        inner.set_callback(move |v| func(v.into(), prom))
                     },
                     None => func(None, prom),      // no promise but awaiting value?
                 }
