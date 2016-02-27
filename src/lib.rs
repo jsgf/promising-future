@@ -144,7 +144,7 @@ pub struct Future<T: Send> {
     // Hold the value
     mailbox: Arc<FutureInner<T>>,
 
-    // Back reference to Promise - if any - so that we can add a waiter
+    // Back reference to Promise - if any - so that we can set a callback.
     promise: Option<Weak<Mutex<PromiseInner<T>>>>,
 }
 
@@ -327,7 +327,7 @@ impl<T: Send> Future<T> {
     ///
     /// This is the most general form of a completion callback; see
     /// also `then` and `chain` for simpler interfaces which are often
-    /// all that's needed..
+    /// all that's needed.
     ///
     /// ```
     /// # use promising_future::future_promise;
@@ -352,8 +352,7 @@ impl<T: Send> Future<T> {
         let mut val = self.mailbox.val.lock().unwrap();
 
         match val.take() {
-            Some(v) => func(v.into(), prom), // already done, so apply callback now
-
+            Some(v) => func(v.into(), prom), // already have a value, so apply callback to it
             None => {
                 // set function to be called in promise context
                 match self.promise.and_then(|p| p.upgrade()) {
@@ -503,8 +502,6 @@ impl<T: Send> Promise<T> {
     fn set_inner(&mut self, v: Promiseval<T>) {
         // Big retry loop
         loop {
-            use PromiseInner::*;
-
             // The lock order is FutureInner then PromiseInner, but we need to take the PromiseInner
             // lock to find the Future, so first take the PromiseInner lock and get the Future if
             // there is one.
@@ -517,7 +514,7 @@ impl<T: Send> Promise<T> {
             // PromiseInner lock and set a callback. We'll need to re-check once we re-take the
             // lock.
             match future {
-                Future { future, waiter } => {
+                PromiseInner::Future { future, waiter } => {
                     // If we have a Future then set the value, otherwise just dump it
                     if let Some(future) = future.upgrade() {
                         let mut flk = future.val.lock().unwrap(); // take Future value
@@ -541,10 +538,8 @@ impl<T: Send> Promise<T> {
                         }
                     }
                 },
-
-                Callback(cb) => cb.call_box(v), // no future, but there is a callback
-
-                Empty => (),                    // Already set - used by Drop
+                PromiseInner::Callback(cb) => cb.call_box(v), // no future, but there is a callback
+                PromiseInner::Empty => (),                    // Already set - used by Drop
             }
 
             // Finished
