@@ -67,47 +67,23 @@
 //! corresponding `Future` still exists; if not, it may choose to abort some time-consuming process
 //! rather than have its output simply discarded.
 
-use std::sync::{Mutex, Condvar, Arc, Weak};
-use std::iter::FromIterator;
-use std::mem;
-use std::thread;
-use std::fmt::{self, Formatter, Debug};
-
-mod fnbox;
-use fnbox::{FnBox, Thunk};
-mod futurestream;
-use futurestream::WaiterNotify;
-pub use futurestream::{FutureStream, FutureStreamIter, FutureStreamWaiter};
-
-/// A trait for spawning threads.
-pub trait Spawner {
-    /// Spawn a thread to run function `f`.
-    fn spawn<F>(&self, f: F) where F: FnOnce() + Send + 'static;
-}
-
-/// An implementation of `Spawner` that creates normal `std::thread` threads.
-pub struct ThreadSpawner;
-
-impl Spawner for ThreadSpawner {
-    fn spawn<F>(&self, f: F)
-        where F: FnOnce() + Send + 'static
-    {
-        let _ = thread::spawn(f);
-    }
-}
-
 /// An implementation of `Spawner` that spawns threads from a `ThreadPool`.
 #[cfg(feature = "threadpool")]
 extern crate threadpool;
 
-#[cfg(feature = "threadpool")]
-impl Spawner for threadpool::ThreadPool {
-    fn spawn<F>(&self, f: F)
-        where F: FnOnce() + Send + 'static
-    {
-        self.execute(f)
-    }
-}
+use std::sync::{Mutex, Condvar, Arc, Weak};
+use std::iter::FromIterator;
+use std::mem;
+use std::fmt::{self, Formatter, Debug};
+
+mod fnbox;
+use fnbox::{FnBox, Thunk};
+mod spawner;
+pub use spawner::{Spawner, ThreadSpawner};
+
+mod futurestream;
+use futurestream::WaiterNotify;
+pub use futurestream::{FutureStream, FutureStreamIter, FutureStreamWaiter};
 
 /// Result of calling `Future.poll()`.
 #[derive(Debug)]
