@@ -44,6 +44,9 @@ impl WaiterNotify {
 ///
 /// It implements an iterator over completed `Future`s, and can be constructed from an iterator of
 /// `Future`s.
+///
+/// May be cloned and the clones passed to other threads so that `Future`s may be added from multiple
+/// threads.
 #[derive(Clone)]
 pub struct FutureStream<T: Send> {
     tx: Sender<Token>,                      // endpoint to notify completion
@@ -71,8 +74,8 @@ pub struct FutureStream<T: Send> {
 /// }
 /// ```
 ///
-/// It may also be converted into an `Iterator` over the values yielded by resolved `Futures`
-/// (unfulfilled `Promises` are ignored).
+/// It may also be converted into an `Iterator` over the values yielded by resolved `Future`s
+/// (unfulfilled `Promise`s are ignored).
 ///
 /// ```
 /// # use ::promising_future::{Future,FutureStream};
