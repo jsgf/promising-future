@@ -1,5 +1,10 @@
-use super::*;
-use super::Pollresult::{Resolved, Unresolved};
+extern crate promising_future;
+
+#[cfg(feature = "threadpool")]
+extern crate threadpool;
+
+use promising_future::*;
+use promising_future::Pollresult::{Resolved, Unresolved};
 use std::thread;
 use std::mem;
 use std::iter::FromIterator;
@@ -646,8 +651,8 @@ fn double_waiter() {
 }
 
 #[cfg(feature = "threadpool")]
-mod threadpool {
-    use super::super::*;
+mod pool {
+    use promising_future::*;
     use threadpool::ThreadPool;
     use super::sleep_ms;
 

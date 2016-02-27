@@ -73,9 +73,6 @@ use std::mem;
 use std::thread;
 use std::fmt::{self, Formatter, Debug};
 
-#[cfg(test)]
-mod test;
-
 mod futurestream;
 use futurestream::WaiterNotify;
 pub use futurestream::{FutureStream, FutureStreamIter, FutureStreamWaiter};
