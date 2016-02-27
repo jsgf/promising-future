@@ -73,20 +73,11 @@ use std::mem;
 use std::thread;
 use std::fmt::{self, Formatter, Debug};
 
+mod fnbox;
+use fnbox::{FnBox, Thunk};
 mod futurestream;
 use futurestream::WaiterNotify;
 pub use futurestream::{FutureStream, FutureStreamIter, FutureStreamWaiter};
-
-// FnBox workaround adapted from threadpool
-trait FnBox<P> {
-    fn call_box(self: Box<Self>, param: P);
-}
-
-impl<F: FnOnce(P), P> FnBox<P> for F {
-    fn call_box(self: Box<F>, param: P) { (*self)(param) }
-}
-
-type Thunk<'a, P> = Box<FnBox<P> + Send + 'a>;
 
 /// A trait for spawning threads.
 pub trait Spawner {
