@@ -1,6 +1,8 @@
 # Promising Future
 
 [![Build Status](https://travis-ci.org/jsgf/promising-future.svg?branch=master)](https://travis-ci.org/jsgf/promising-future)
+[![Crates.io](https://img.shields.io/crates/v/promising-future.svg)]()
+[![Coverage Status](https://coveralls.io/repos/github/jsgf/promising-future/badge.svg?branch=master)](https://coveralls.io/github/jsgf/promising-future?branch=master)
 
 This crate implements `Promise`s and `Future`s, where a `Future`
 represents an unknown value, and a `Promise` determines what that

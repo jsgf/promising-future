@@ -11,10 +11,25 @@ rust:
 - beta
 - nightly
 
+before_script:
+  - pip install 'travis-cargo<0.2' --user && export PATH=$HOME/.local/bin:$PATH
+
+addons:
+  apt:
+    packages:
+      - libcurl4-openssl-dev
+      - libelf-dev
+      - libdw-dev
+      - binutils-dev # optional: only required for the --verify flag of coveralls
+
 script:
-- cargo build --release --verbose
-- cargo test --verbose
-- cargo doc --no-deps --verbose
+- |
+    travis-cargo build &&
+    travis-cargo test &&
+    travis-cargo --only stable doc
 
 after_success:
-- if [ "$TRAVIS_RUST_VERSION" = stable ]; then ./.travis-update-gh-pages.sh || echo Update pages failed $?; fi
+- travis-cargo --only stable doc-upload
+- travis-cargo coveralls --no-sudo --verify
+
+# - if [ "$TRAVIS_RUST_VERSION" = stable ]; then ./.travis-update-gh-pages.sh || echo Update pages failed $?; fi
