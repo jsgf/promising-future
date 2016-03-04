@@ -11,8 +11,9 @@ keywords = ["async", "asynchronous", "promise", "future"]
 
 [features]
 default = [ "threadpool" ]
-unstable = []
+unstable = [ "criterion", "criterion-macros" ]
 
-[dependencies.threadpool]
-version = "0.2"
-optional = true
+[dependencies]
+threadpool = { version = "0.2", optional = true }
+criterion = { git = "https://github.com/japaric/criterion.rs.git", optional=true }
+criterion-macros = { git = "https://github.com/japaric/criterion.rs.git", path = "macros", optional=true }
