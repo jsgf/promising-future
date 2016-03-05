@@ -67,6 +67,16 @@
 //! corresponding `Future` still exists; if not, it may choose to abort some time-consuming process
 //! rather than have its output simply discarded.
 
+// Internal details
+//
+// A Future has a promise iff its Unresolved. A Future is either created resolved (`with_value`),
+// in which case it never has a Promise, or becomes resolved by the Promise, which is destroyed
+// in the process. A Promise can exist without a Future - for example, when a callback is set on
+// the Future, which consumes the Future while setting the callback in the Promise.
+//
+// A Future can also be owned by a FutureStream, which prevents any other call on it. Therefore
+// a Future in a FutureStream can't have a callback set on it.
+
 /// An implementation of `Spawner` that spawns threads from a `ThreadPool`.
 #[cfg(feature = "threadpool")]
 extern crate threadpool;
@@ -352,6 +362,7 @@ impl<T: Send> Future<T> {
         // Lock order: Value, then...
         let mut val = self.mailbox.val.lock().unwrap();
 
+        // XXX fast-path callbacks on already complete Futures?
         match val.take() {
             Some(v) => func(v.into(), prom), // already have a value, so apply callback to it
             None => {
