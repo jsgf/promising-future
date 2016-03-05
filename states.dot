@@ -1,0 +1,20 @@
+digraph future {
+    UNRESOLVED -> RESOLVED;
+    UNRESOLVED -> CALLBACK;
+    UNRESOLVED -> STREAM;
+    STREAM -> RESOLVED;
+    RESOLVED -> DEAD;
+    UNRESOLVED -> DEAD;
+
+    CALLBACK  [ label = "CALLBACK\nconsumed" ];
+    STREAM [ label = "STREAM\nowned"];
+    DEAD [ label = "DEAD\nconsumed" ];
+}
+
+digraph promise {
+    INCOMPLETE -> FULFILLED;
+    INCOMPLETE -> UNFULFILLED;
+    INCOMPLETE -> CANCELLED;
+    CANCELLED -> FULFILLED;
+    CANCELLED -> UNFULFILLED;
+}
