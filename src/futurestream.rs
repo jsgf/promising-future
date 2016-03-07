@@ -1,5 +1,4 @@
-use std::sync::{Mutex, Condvar, Arc};
-use std::fmt::{self, Formatter, Debug};
+use std::sync::Arc;
 use std::sync::mpsc::{Sender, Receiver, channel};
 use std::collections::HashMap;
 use std::ops::RangeFrom;
@@ -8,23 +7,13 @@ use std::iter::FromIterator;
 use super::Pollresult::*;
 use super::Future;
 
-// A Condvar and its Mutex
-struct CvMx<T> {
-    cv: Condvar,
-    mx: Mutex<T>,
-}
+use cvmx::CvMx;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct Token(usize);
 
 #[derive(Debug)]
 struct TokenGen(RangeFrom<usize>);
-
-impl<T: Debug> Debug for CvMx<T> {
-    fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
-        write!(fmt, "CvMx({:?})", &*self.mx.lock().unwrap())
-    }
-}
 
 // Notify a waiter of a completion
 pub struct WaiterNotify(Token, Sender<Token>);
@@ -34,7 +23,10 @@ impl WaiterNotify {
         WaiterNotify(tok, tx.clone())
     }
 
-    pub fn notify(self) { self.1.send(self.0).unwrap() }
+    pub fn notify(self) {
+        // send may fail if other end has gone away
+        let _ = self.1.send(self.0);
+     }
 }
 
 /// Stream of multiple `Future`s
@@ -116,7 +108,7 @@ impl<T: Send> FutureStream<T> {
 
         FutureStream {
             tx: tx,
-            inner: Arc::new(CvMx { cv: Condvar::new(), mx: Mutex::new(inner) }),
+            inner: Arc::new(CvMx::new(inner)),
         }
     }
 

@@ -515,7 +515,7 @@ fn stress_fp_callback() {
     use std::sync::Arc;
 
     const ITERS: u32 = 100000;
-    let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).into_iter().map(|i| { let (f, p) = future_promise(); ((i, f), (i, p)) }).unzip();
+    let (futs, proms): (Vec<_>, Vec<_>) = (0..ITERS).map(|i| { let (f, p) = future_promise(); ((i, f), (i, p)) }).unzip();
     let futcount = Arc::new(ATOMIC_USIZE_INIT);
 
     let futurer = {
