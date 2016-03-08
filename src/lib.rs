@@ -115,13 +115,20 @@ enum Promiseval<T> {
     Unfulfilled,                    // Promise dropped without value
 }
 
-use self::Promiseval::*;
+impl<T> From<Option<T>> for Promiseval<T> {
+    fn from(v: Option<T>) -> Self {
+        match v {
+            Some(v) => Promiseval::Fulfilled(v),
+            None => Promiseval::Unfulfilled,
+        }
+    }
+}
 
 impl<T> Into<Option<T>> for Promiseval<T> {
     fn into(self) -> Option<T> {
         match self {
-            Fulfilled(v) => Some(v),
-            Unfulfilled => None,
+            Promiseval::Fulfilled(v) => Some(v),
+            Promiseval::Unfulfilled => None,
         }
     }
 }
@@ -144,13 +151,17 @@ pub struct Future<T: Send> {
 
     // Back reference to Promise - if any - so that we can set a callback.
     promise: Option<Weak<Mutex<PromiseInner<T>>>>,
+    callback: Option<Post<Thunk<'static, Promiseval<T>>>>,
 }
 
 impl<T: Send> Future<T> {
-    fn new(mail: Mailbox<T>, promise: &Arc<Mutex<PromiseInner<T>>>) -> Future<T> {
+    fn new(mail: Mailbox<T>,
+        promise: &Arc<Mutex<PromiseInner<T>>>,
+        callback: Post<Thunk<'static, Promiseval<T>>>) -> Future<T> {
         Future {
             val: FutureVal::Mailbox(mail),
             promise: Some(Arc::downgrade(promise)),
+            callback: Some(callback),
         }
     }
 
@@ -169,6 +180,7 @@ impl<T: Send> Future<T> {
         Future {
             val: FutureVal::Val(v),
             promise: None,
+            callback: None,
         }
     }
 
@@ -187,6 +199,7 @@ impl<T: Send> Future<T> {
         Future {
             val: FutureVal::Empty,
             promise: None,
+            callback: None,
         }
     }
 
@@ -214,15 +227,14 @@ impl<T: Send> Future<T> {
         match val {
             Empty => Pollresult::Resolved(None),
             Val(v) => Pollresult::Resolved(Some(v)),
-            Mailbox(mail) => {
-                use mailbox::Pollresult::*;
-                match mail.poll() {
-                    Dead => Pollresult::Resolved(None),
-                    Waiting => {
+            Mailbox(mut mail) => {
+                match mail.take() {
+                    Ok(None) => {
                         self.val = Mailbox(mail);
                         Pollresult::Unresolved(self)
                     },
-                    Value => Pollresult::Resolved(Some(mail.take().ok().unwrap())),
+                    Ok(v@Some(_)) => Pollresult::Resolved(v),
+                    Err(_) => Pollresult::Resolved(None),
                 }
             },
         }
@@ -357,34 +369,36 @@ impl<T: Send> Future<T> {
     /// prom.set(1);
     /// assert_eq!(fut.value(), Some(124))
     /// ```
-    pub fn callback<F, U>(self, func: F) -> Future<U>
+    pub fn callback<F, U>(mut self, func: F) -> Future<U>
         where F: FnOnce(Option<T>, Promise<U>) + Send + 'static,
               U: Send + 'static
     {
         use FutureVal::*;
         let (fut, prom) = future_promise();
 
+        let func = move |val: Promiseval<T>| func(val.into(), prom);
+
         match self.val {
-            Empty => func(None, prom),
-            Val(v) => func(Some(v), prom),
+            Empty => func(Promiseval::Unfulfilled),
+            Val(v) => func(Promiseval::Fulfilled(v)),
 
-            Mailbox(mail) => {
-                match self.promise.and_then(|p| p.upgrade()) {
-                    None => {
-                        // no promise, might have a value
-                        func(mail.take().ok(), prom)
-                    },
-                    Some(cb) => {
-                        // have a promise; lock it first then checl to see if we have
-                        // a value or need to set callback
-                        let mut inner = cb.lock().unwrap();
-
-                        // Check to see if we've already got a value, and apply
-                        // the function immediately if we do.
-                        match mail.take() {
-                            Err(_) => inner.set_callback(move |v| func(v.into(), prom)),
-                            Ok(v) => func(Some(v), prom),
-                        }
+            Mailbox(mut mail) => {
+                // try posting func to other side
+                let func = Box::new(func) as Box<FnBox<Promiseval<T>> + Send>;
+                let func =
+                    match mem::replace(&mut self.callback, None) {
+                        None => Some(func),
+                        Some(cb) =>
+                            match cb.post(func) {
+                                Ok(_) => None,
+                                Err(func) => Some(func),
+                            },
+                    };
+                if let Some(func) = func {
+                    // couldn't send it, handle locally
+                    match mail.take() {
+                        Err(_) => (),
+                        Ok(v) => func.call_box(From::from(v)),
                     }
                 }
             }
@@ -458,19 +472,12 @@ enum PromiseInner<T: Send> {
         future: Post<T>,
         waiter: Option<WaiterNotify>,
     },
-    Callback(Thunk<'static, Promiseval<T>>),    // Callback which wants the value
 }
 
 impl<T: Send> PromiseInner<T> {
     // Create a Promise which holds a weak reference to its Future.
     fn with_future(fut: Post<T>) -> PromiseInner<T> {
         PromiseInner::Future { future: fut, waiter: None }
-    }
-
-    fn set_callback<F>(&mut self, cb: F)
-        where F: FnOnce(Promiseval<T>) + Send + 'static
-    {
-        *self = PromiseInner::Callback(Box::new(cb))
     }
 
     // Someone wants to know when this Promise is fulfilled.
@@ -487,7 +494,6 @@ impl<T: Send> PromiseInner<T> {
     fn canceled(&self) -> bool {
         match self {
             &PromiseInner::Empty => true,
-            &PromiseInner::Callback(_) => false,
             &PromiseInner::Future { ref future, .. } => future.isdead(),
         }
     }
@@ -498,7 +504,6 @@ impl<T: Send> Debug for PromiseInner<T> {
         match self {
             &PromiseInner::Empty => write!(f, "Empty"),
             &PromiseInner::Future { .. } => write!(f, "Future {{ .. }}"),
-            &PromiseInner::Callback(_) => write!(f, "Callback"),
         }
     }
 }
@@ -512,38 +517,47 @@ impl<T: Send> Debug for PromiseInner<T> {
 /// leaving it "unfulfilled".
 ///
 /// It may only be created in a pair with a `Future` using the function `future_promise()`.
-pub struct Promise<T: Send>(Arc<Mutex<PromiseInner<T>>>);
+pub struct Promise<T: Send> {
+    inner: Arc<Mutex<PromiseInner<T>>>,
+    cbmail: Mailbox<Thunk<'static, Promiseval<T>>>,
+}
 
 impl<T: Send> Promise<T> {
-    fn new(fut: Post<T>) -> Promise<T> {
-        Promise(Arc::new(Mutex::new(PromiseInner::with_future(fut))))
+    fn new(fut: Post<T>, cbmail: Mailbox<Thunk<'static, Promiseval<T>>>) -> Promise<T> {
+        Promise {
+            inner: Arc::new(Mutex::new(PromiseInner::with_future(fut))),
+            cbmail: cbmail,
+        }
     }
 
     // Set the value on the inner promise
     fn set_inner(&mut self, v: Promiseval<T>) {
         use PromiseInner::*;
 
-        let mut inner = self.0.lock().expect("inner lock");
+        // check for an existing callback and use it
+        if let Ok(Some(cb)) = self.cbmail.take() {
+            cb.call_box(v.into())
+        } else {
+            let mut inner = self.inner.lock().expect("inner lock");
 
-        match mem::replace(&mut *inner, Empty) {
-            Future { future, waiter } => {
-                if let Promiseval::Fulfilled(v) = v {
-                    future.post(v);
-                };
-                if let Some(notify) = waiter {
-                    notify.notify();
-                };
-            },
+            match mem::replace(&mut *inner, Empty) {
+                Future { future, waiter } => {
+                    if let Promiseval::Fulfilled(v) = v {
+                        let _ = future.post(v); // discard value if future is gone
+                    };
+                    if let Some(notify) = waiter {
+                        notify.notify();
+                    };
+                },
 
-            Callback(cb) => cb.call_box(v.into()),
-
-            Empty => (),
-        };
+                Empty => (),
+            };
+        }
     }
 
     /// Fulfill the `Promise` by resolving the corresponding `Future` with a value.
     pub fn set(mut self, v: T) {
-        self.set_inner(Fulfilled(v))
+        self.set_inner(Promiseval::Fulfilled(v))
     }
 
     /// Return true if the corresponding `Future` no longer exists, and so any value set would be
@@ -569,19 +583,19 @@ impl<T: Send> Promise<T> {
     /// mem::drop(fut);
     /// ```
     pub fn canceled(&self) -> bool {
-        self.0.lock().unwrap().canceled()
+        self.inner.lock().unwrap().canceled()
     }
 }
 
 impl<T: Send> Drop for Promise<T> {
     fn drop(&mut self) {
-        self.set_inner(Unfulfilled)
+        self.set_inner(Promiseval::Unfulfilled)
     }
 }
 
 impl<T: Send> Debug for Promise<T> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "Promise({:?})", *self.0.lock().unwrap())
+        write!(f, "Promise({:?})", *self.inner.lock().unwrap())
     }
 }
 
@@ -599,8 +613,9 @@ impl<T: Send> Debug for Promise<T> {
 /// ```
 pub fn future_promise<T: Send>() -> (Future<T>, Promise<T>) {
     let (mail, post) = mailbox();
-    let p = Promise::new(post);
-    let f = Future::new(mail, &p.0);
+    let (cbmail, cbpost) = mailbox();
+    let p = Promise::new(post, cbmail);
+    let f = Future::new(mail, &p.inner, cbpost);
 
     (f, p)
 }

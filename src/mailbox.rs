@@ -21,43 +21,17 @@ pub fn mailbox<T>() -> (Mailbox<T>, Post<T>) {
     (mail, post)
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum Pollresult {
-    Value,
-    Waiting,
-    Dead,
-}
-
 impl<T> Mailbox<T> {
-    /// Poll current state of the `Mailbox`.
-    ///
-    /// Return values are:
-    ///
-    /// * `Waiting` - waiting for a value
-    /// * `Value` - have a values
-    /// * `Dead` - don't have a value, and the corresponding `Post` is gone, so it will never have
-    ///            a value.
-    pub fn poll(&self) -> Pollresult {
-        let inner = self.0.mx.lock().unwrap();
-
-        match &inner.v {
-            &None => if inner.dead { Pollresult::Dead } else { Pollresult::Waiting },
-            &Some(_) => Pollresult::Value,
-        }
-    }
-
     /// Take the value from a `Mailbox`
     ///
-    /// Take the value, if it has one. If it has a value, it consumes the `Mailbox` and Returns
-    /// the value, otherwise it returns the `Mailbox` again.
-    pub fn take(self) -> Result<T, Self> {
-        let v = {
-            let mut inner = self.0.mx.lock().unwrap();
-            mem::replace(&mut inner.v, None)
-        };
-        match v {
-            None => Err(self),
-            Some(v) => Ok(v),
+    /// Take the value, if it has one. It will only return the value once, and return
+    /// and None thereafter.
+    pub fn take(&mut self) -> Result<Option<T>, ()> {
+        let mut inner = self.0.mx.lock().unwrap();
+
+        match mem::replace(&mut inner.v, None) {
+            None if inner.dead => Err(()),
+            v => Ok(v)
         }
     }
 
@@ -88,10 +62,17 @@ impl<T> Post<T> {
     /// Post a value to the corresponding `Mailbox`
     ///
     /// The value is lost if the `Mailbox` has gone.
-    pub fn post(self, val: T) {
+    pub fn post(self, val: T) -> Result<(), T> {
         let mut inner = self.0.mx.lock().unwrap();
-        inner.v = Some(val);
-        self.0.cv.notify_one();
+
+        if inner.dead {
+            Err(val)
+        } else {
+            inner.v = Some(val);
+            self.0.cv.notify_one();
+            inner.dead = true;      // mark dead under lock
+            Ok(())
+        }
     }
 
     /// Determine whether the `Mailbox` still exists.
@@ -125,16 +106,16 @@ mod tests {
     #[test]
     fn basic() {
         {
-            let (m, p) = mailbox();
+            let (mut m, p) = mailbox();
             assert!(!p.isdead());
-            assert_eq!(m.poll(), Pollresult::Waiting);
-            p.post(123);
-            assert_eq!(m.poll(), Pollresult::Value);
-            assert_eq!(m.take().ok().unwrap(), 123);
+            assert_eq!(m.take(), Ok(None));
+            p.post(123).expect("post");
+            assert_eq!(m.take(), Ok(Some(123)));
+            assert_eq!(m.take(), Err(()));
         }
         {
             let (m, p) = mailbox();
-            p.post(123);
+            p.post(123).expect("post");
             assert_eq!(m.wait().ok().unwrap(), 123);
         }
     }
@@ -142,13 +123,11 @@ mod tests {
     #[test]
     fn postdead() {
         {
-            let (m, _) = mailbox::<()>();
-            assert_eq!(m.poll(), Pollresult::Dead);
+            let (mut m, _) = mailbox::<()>();
             assert!(m.take().is_err())
         }
         {
             let (m, _) = mailbox::<()>();
-            assert_eq!(m.poll(), Pollresult::Dead);
             assert!(m.wait().is_err())
         }
     }
@@ -157,25 +136,25 @@ mod tests {
     fn boxdead() {
         let (_, p) = mailbox();
         assert!(p.isdead());
-        p.post(123);
+        assert_eq!(p.post(123), Err(123))
     }
 
     #[test]
     fn wait() {
-        let (m, p) = mailbox();
+        let (mut m, p) = mailbox();
         let (tx, rx) = channel();
         thread::spawn(move || { let _ = rx.recv(); sleep_ms(200); p.post(123) });
-        assert_eq!(m.poll(), Pollresult::Waiting);
+        assert_eq!(m.take(), Ok(None));
         let _ = tx.send(());
         assert_eq!(m.wait().ok().unwrap(), 123);
     }
 
     #[test]
     fn waitdead() {
-        let (m, p) = mailbox::<u32>();
+        let (mut m, p) = mailbox::<u32>();
         let (tx, rx) = channel();
         thread::spawn(move || { let _ = rx.recv(); sleep_ms(200); mem::drop(p) });
-        assert_eq!(m.poll(), Pollresult::Waiting);
+        assert_eq!(m.take(), Ok(None));
         let _ = tx.send(());
         assert_eq!(m.wait().err().unwrap(), ());
     }
