@@ -18,7 +18,7 @@ use Pollresult::*;
 /// Note 2: `futures.into_iter()` should avoid blocking, as that will block this function even if
 /// other `Future`s resolve. (FIXME)
 pub fn any<T, I>(futures: I) -> Option<T>
-    where I: IntoIterator<Item=Future<T>>, T: Send
+    where I: IntoIterator<Item=Future<T>>, T: Send + 'static
 {
     let stream = FutureStream::new();
 

@@ -1,7 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Sender, Receiver, channel};
-use std::collections::HashMap;
-use std::ops::RangeFrom;
+use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 use std::iter::FromIterator;
 
 use super::Pollresult::*;
@@ -9,24 +8,10 @@ use super::Future;
 
 use cvmx::CvMx;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct Token(usize);
-
 #[derive(Debug)]
-struct TokenGen(RangeFrom<usize>);
-
-// Notify a waiter of a completion
-pub struct WaiterNotify(Token, Sender<Token>);
-
-impl WaiterNotify {
-    fn new(tok: Token, tx: &Sender<Token>) -> WaiterNotify {
-        WaiterNotify(tok, tx.clone())
-    }
-
-    pub fn notify(self) {
-        // send may fail if other end has gone away
-        let _ = self.1.send(self.0);
-     }
+struct TxCounts(AtomicUsize);
+impl TxCounts {
+    fn new() -> Self { TxCounts(ATOMIC_USIZE_INIT) }
 }
 
 /// Stream of multiple `Future`s
@@ -41,8 +26,31 @@ impl WaiterNotify {
 /// threads.
 #[derive(Clone)]
 pub struct FutureStream<T: Send> {
-    tx: Sender<Token>,                      // endpoint to notify completion
-    inner: Arc<CvMx<FutureStreamInner<T>>>, // set of waited-for futures
+    inner: Arc<FutureStreamInner<T>>,
+}
+
+struct FutureStreamInner<T: Send> {
+    // Channel to notify complete Promises, which may be either resolved or
+    // unresolved. Expectation is that every instance of tx will have a single
+    // message sent.
+    tx: Sender<Option<T>>,                      // endpoint to notify completion
+    counts: Arc<TxCounts>,
+
+    wait: CvMx<Option<FutureStreamWaitInner<T>>>,
+}
+
+impl<T: Send> FutureStreamInner<T> {
+    fn new() -> Self {
+        let (tx, rx) = channel();
+        let counts = TxCounts::new();
+        let inner = FutureStreamWaitInner::new(rx, &counts);
+
+        FutureStreamInner {
+            tx: tx,
+            counts: counts,
+            wait: CvMx::new(Some(inner)),
+        }
+    }
 }
 
 /// Waiter for `Future`s in a `FutureStream`.
@@ -80,79 +88,80 @@ pub struct FutureStream<T: Send> {
 /// ```
 pub struct FutureStreamWaiter<'a, T: Send + 'a> {
     fs: &'a FutureStream<T>,
-    rx: Option<Receiver<Token>>,        // Option so that Drop can remove it
+    inner: Option<Arc<FutureStreamWaitInner<T>>>,   // Option so that Drop can remove it
 }
 
-struct FutureStreamInner<T: Send> {
-    gen: TokenGen,
-    futures: HashMap<Token, Future<T>>, // map index to future
-
-    rx: Option<Receiver<Token>>,        // index receiver (if not passed to a waiter)
+struct FutureStreamWaitInner<T: Send> {
+    rx: Mutex<Receiver<Option<T>>>,             // index receiver
+    counts: Arc<TxCounts>,
 }
-
-impl Iterator for TokenGen {
-    type Item = Token;
-
-    fn next(&mut self) -> Option<Token> { self.0.next().map(Token) }
+impl<T: Send> FutureStreamWaitInner<T> {
+    fn new(rx: Receiver<Option<T>>, counts: &TxCounts) -> Self {
+        FutureStreamWaitInner {
+            rx: Mutex::new(rx),
+            counts: counts.clone(),
+        }
+    }
 }
 
 impl<T: Send> FutureStream<T> {
     pub fn new() -> FutureStream<T> {
         let (tx, rx) = channel();
-        let inner = FutureStreamInner {
-            gen: TokenGen(0..),
-            futures: HashMap::new(),
+        let counts = Arc::new(TxCounts::new());
 
-            rx: Some(rx),
+        let inner = FutureStreamWaitInner {
+            rx: Mutex::new(rx),
+            counts: counts.clone(),
         };
 
         FutureStream {
             tx: tx,
-            inner: Arc::new(CvMx::new(inner)),
+            counts: counts,
+            inner: CvMx::new(Some(Arc::new(inner))),
         }
     }
 
     /// Add a `Future` to the stream.
-    pub fn add(&self, fut: Future<T>) {
-        let mut inner = self.inner.mx.lock().unwrap();
-        let tok = inner.gen.next().expect("run out of tokens");
-
-        fut.add_waiter(WaiterNotify::new(tok, &self.tx));
-        inner.futures.insert(tok, fut);
+    pub fn add(&self, fut: Future<T>)
+        where T: 'static
+    {
+        let tx = self.tx.clone();
+        self.counts.0.fetch_add(1, Ordering::Acquire);
+        fut.inner_callback(move |v| { let _ = tx.send(v.into()); } );
     }
 
     /// Return number of outstanding `Future`s.
     pub fn outstanding(&self) -> usize {
-        self.inner.mx.lock().unwrap().futures.len()
+        self.counts.0.load(Ordering::Relaxed)
     }
 
     /// Return a singleton `FutureStreamWaiter`. If one already exists, block until it is released.
     pub fn waiter<'fs>(&'fs self) -> FutureStreamWaiter<'fs, T> {
-        let mut inner = self.inner.mx.lock().unwrap();
+        let mut mx = self.inner.mx.lock().unwrap();
 
         loop {
-            match inner.rx.take() {
-                None => { inner = self.inner.cv.wait(inner).unwrap() },
-                Some(rx) => return FutureStreamWaiter::new(self, rx),
+            match mx.take() {
+                None => { mx = self.inner.cv.wait(mx).unwrap() },
+                Some(inner) => return FutureStreamWaiter::new(self, inner),
             }
         }
     }
 
     /// Return a singleton `FutureStreamWaiter`. Returns `None` if one already exists.
     pub fn try_waiter<'fs>(&'fs self) -> Option<FutureStreamWaiter<'fs, T>> {
-        let mut inner = self.inner.mx.lock().unwrap();
+        let mut mx = self.inner.mx.lock().unwrap();
 
-        match inner.rx.take() {
+        match mx.take() {
             None => None,
-            Some(rx) => Some(FutureStreamWaiter::new(self, rx)),
+            Some(inner) => Some(FutureStreamWaiter::new(self, inner)),
         }
     }
 
-    fn return_waiter(&self, rx: Receiver<Token>) {
-        let mut inner = self.inner.mx.lock().unwrap();
+    fn return_waiter(&self, inner: Arc<FutureStreamWaitInner<T>>) {
+        let mut mx = self.inner.mx.lock().unwrap();
 
-        assert!(inner.rx.is_none());
-        inner.rx = Some(rx);
+        assert!(mx.is_none());
+        *mx = Some(inner);
         self.inner.cv.notify_one();
     }
 
@@ -169,39 +178,43 @@ impl<T: Send> FutureStream<T> {
 }
 
 impl<'fs, T: Send> FutureStreamWaiter<'fs, T> {
-    fn new(fs: &'fs FutureStream<T>, rx: Receiver<Token>) -> FutureStreamWaiter<'fs, T> {
-        FutureStreamWaiter { fs: fs, rx: Some(rx) }
+    fn new(fs: &'fs FutureStream<T>, inner: Arc<FutureStreamWaitInner<T>>) -> FutureStreamWaiter<'fs, T> {
+        FutureStreamWaiter { fs: fs, inner: Some(inner) }
     }
 
-    /// Return resolved `Future`s. Blocks if there are outstanding `Futures` which are not yet
-    /// resolved. Returns `None` when there are no more outstanding `Future`s.
+    // Count number of tx instances which could actually send
+    fn num_tx(&self) -> usize {
+        let counts = &self.inner.as_ref().unwrap().counts;
+        let count = counts.0.load(Ordering::Relaxed);
+        count
+    }
+
+    /// Return resolved `Future`s. Blocks if there are outstanding `Futures`
+    /// which are not yet resolved. Returns `None` when there are no more
+    /// outstanding `Future`s.
     pub fn wait(&mut self) -> Option<Future<T>> {
-        if { let l = self.fs.inner.mx.lock().unwrap(); l.futures.is_empty() } {
-            // Nothing left
-            None
-        } else {
-            // Wait for the next completion notification
-            match self.rx.as_ref().unwrap().recv() {
-                Ok(idx) => {
-                    let mut l = self.fs.inner.mx.lock().unwrap();
-                    l.futures.remove(&idx)
-                },
-                Err(_) => None,
+        let inner = &*self.inner.as_ref().unwrap();
+        let rx = inner.rx.lock().unwrap();
+
+        // poll first in case there's buffered results
+        match rx.try_recv() {
+            Ok(v) => return Some(Future::from(v)),
+            Err(_) => (),
+        };
+        while self.num_tx() > 0 {
+            match rx.recv() {
+                Ok(v) => return Some(Future::from(v)),
+                Err(_) => (),
             }
         }
+        None
     }
 
     /// Return next resolved `Future`, but don't wait for more to resolve.
     pub fn poll(&mut self) -> Option<Future<T>> {
-        let mut inner = self.fs.inner.mx.lock().unwrap();
-
-        if inner.futures.is_empty() {
-            None
-        } else {
-            match self.rx.as_ref().unwrap().try_recv() {
-                Ok(idx) => inner.futures.remove(&idx),
-                Err(_) => None,
-            }
+        match self.inner.as_ref().unwrap().rx.lock().unwrap().try_recv() {
+            Ok(v) => Some(Future::from(v)),
+            Err(_) => None,
         }
     }
 }
@@ -209,7 +222,7 @@ impl<'fs, T: Send> FutureStreamWaiter<'fs, T> {
 impl<'fs, T: Send> Drop for FutureStreamWaiter<'fs, T> {
     fn drop(&mut self) {
         // Return notifications to FutureStream
-        self.fs.return_waiter(self.rx.take().unwrap())
+        self.fs.return_waiter(self.inner.take().unwrap())
     }
 }
 
@@ -252,7 +265,9 @@ impl<'a, T: Send + 'a> IntoIterator for &'a FutureStream<T> {
     fn into_iter(self) -> Self::IntoIter { self.waiter().into_iter() }
 }
 
-impl<T: Send> FromIterator<Future<T>> for FutureStream<T> {
+impl<T> FromIterator<Future<T>> for FutureStream<T>
+    where T: Send + 'static
+{
     // XXX lazily consume input iterator?
     fn from_iter<I>(iterator: I) -> Self
         where I: IntoIterator<Item=Future<T>>

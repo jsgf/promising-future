@@ -96,7 +96,6 @@ use fnbox::{FnBox, Thunk};
 use mailbox::{mailbox, Mailbox, Post};
 pub use spawner::{Spawner, ThreadSpawner};
 pub use util::{any, all, all_with};
-use futurestream::WaiterNotify;
 pub use futurestream::{FutureStream, FutureStreamIter, FutureStreamWaiter};
 
 /// Result of calling `Future.poll()`.
@@ -373,10 +372,17 @@ impl<T: Send> Future<T> {
         where F: FnOnce(Option<T>, Promise<U>) + Send + 'static,
               U: Send + 'static
     {
-        use FutureVal::*;
         let (fut, prom) = future_promise();
 
-        let func = move |val: Promiseval<T>| func(val.into(), prom);
+        self.inner_callback(move |val| func(val.into(), prom));
+
+        fut
+    }
+
+    fn inner_callback<F>(mut self, func: F)
+        where F: FnOnce(Promiseval<T>) + Send + 'static
+    {
+        use FutureVal::*;
 
         match self.val {
             Empty => func(Promiseval::Unfulfilled),
@@ -403,20 +409,6 @@ impl<T: Send> Future<T> {
                 }
             }
         };
-
-        fut
-    }
-
-    // Called from FutureStream to add it as our waiter.
-    fn add_waiter(&self, notify: WaiterNotify) {
-        let p = self.promise.as_ref().and_then(|p| p.upgrade());
-        match p {
-            Some(mx) => {
-                let mut lk = mx.lock().unwrap();
-                lk.set_waiter(notify);
-            },
-            None => notify.notify(),    // no future, notify now
-        }
     }
 }
 
@@ -468,33 +460,19 @@ impl<T: Send + Debug> Debug for Future<T> {
 // Inner part of a Promise, which may also be weakly referenced by a Future.
 enum PromiseInner<T: Send> {
     Empty,                                      // no content
-    Future {                                    // future which will receive a value
-        future: Post<T>,
-        waiter: Option<WaiterNotify>,
-    },
+    Future(Post<T>),                            // future which will receive a value
 }
 
 impl<T: Send> PromiseInner<T> {
     // Create a Promise which holds a weak reference to its Future.
     fn with_future(fut: Post<T>) -> PromiseInner<T> {
-        PromiseInner::Future { future: fut, waiter: None }
-    }
-
-    // Someone wants to know when this Promise is fulfilled.
-    fn set_waiter(&mut self, notify: WaiterNotify) {
-        match self {
-            &mut PromiseInner::Future { ref mut waiter, .. } => {
-                assert!(waiter.is_none());
-                *waiter = Some(notify);
-            },
-            _ => notify.notify(),   // promise already set, just wake now
-        }
+        PromiseInner::Future(fut)
     }
 
     fn canceled(&self) -> bool {
         match self {
             &PromiseInner::Empty => true,
-            &PromiseInner::Future { ref future, .. } => future.isdead(),
+            &PromiseInner::Future(ref future) => future.isdead(),
         }
     }
 }
@@ -503,7 +481,7 @@ impl<T: Send> Debug for PromiseInner<T> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             &PromiseInner::Empty => write!(f, "Empty"),
-            &PromiseInner::Future { .. } => write!(f, "Future {{ .. }}"),
+            &PromiseInner::Future(_) => write!(f, "Future(_)"),
         }
     }
 }
@@ -541,12 +519,9 @@ impl<T: Send> Promise<T> {
             let mut inner = self.inner.lock().expect("inner lock");
 
             match mem::replace(&mut *inner, Empty) {
-                Future { future, waiter } => {
+                Future(future) => {
                     if let Promiseval::Fulfilled(v) = v {
                         let _ = future.post(v); // discard value if future is gone
-                    };
-                    if let Some(notify) = waiter {
-                        notify.notify();
                     };
                 },
 
