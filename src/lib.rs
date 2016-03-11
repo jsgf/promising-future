@@ -109,30 +109,6 @@ pub enum Pollresult<T: Send> {
     Resolved(Option<T>),
 }
 
-#[derive(Debug, Copy, Clone)]
-enum Promiseval<T> {
-    Fulfilled(T),                   // value
-    Unfulfilled,                    // Promise dropped without value
-}
-
-impl<T> From<Option<T>> for Promiseval<T> {
-    fn from(v: Option<T>) -> Self {
-        match v {
-            Some(v) => Promiseval::Fulfilled(v),
-            None => Promiseval::Unfulfilled,
-        }
-    }
-}
-
-impl<T> Into<Option<T>> for Promiseval<T> {
-    fn into(self) -> Option<T> {
-        match self {
-            Promiseval::Fulfilled(v) => Some(v),
-            Promiseval::Unfulfilled => None,
-        }
-    }
-}
-
 #[derive(Debug)]
 enum FutureVal<T> {
     Empty,
@@ -151,13 +127,13 @@ pub struct Future<T: Send> {
 
     // Back reference to Promise - if any - so that we can set a callback.
     promise: Option<Weak<Mutex<PromiseInner<T>>>>,
-    callback: Option<Post<Thunk<'static, Promiseval<T>>>>,
+    callback: Option<Post<Thunk<'static, Option<T>>>>,
 }
 
 impl<T: Send> Future<T> {
     fn new(mail: Mailbox<T>,
         promise: &Arc<Mutex<PromiseInner<T>>>,
-        callback: Post<Thunk<'static, Promiseval<T>>>) -> Future<T> {
+        callback: Post<Thunk<'static, Option<T>>>) -> Future<T> {
         Future {
             val: FutureVal::Mailbox(mail),
             promise: Some(Arc::downgrade(promise)),
@@ -376,15 +352,15 @@ impl<T: Send> Future<T> {
         use FutureVal::*;
         let (fut, prom) = future_promise();
 
-        let func = move |val: Promiseval<T>| func(val.into(), prom);
+        let func = move |val: Option<T>| func(val.into(), prom);
 
         match self.val {
-            Empty => func(Promiseval::Unfulfilled),
-            Val(v) => func(Promiseval::Fulfilled(v)),
+            Empty => func(None),
+            Val(v) => func(Some(v)),
 
             Mailbox(mut mail) => {
                 // try posting func to other side
-                let func = Box::new(func) as Box<FnBox<Promiseval<T>> + Send>;
+                let func = Box::new(func) as Box<FnBox<Option<T>> + Send>;
                 let func =
                     match mem::replace(&mut self.callback, None) {
                         None => Some(func),
@@ -519,11 +495,11 @@ impl<T: Send> Debug for PromiseInner<T> {
 /// It may only be created in a pair with a `Future` using the function `future_promise()`.
 pub struct Promise<T: Send> {
     inner: Arc<Mutex<PromiseInner<T>>>,
-    cbmail: Mailbox<Thunk<'static, Promiseval<T>>>,
+    cbmail: Mailbox<Thunk<'static, Option<T>>>,
 }
 
 impl<T: Send> Promise<T> {
-    fn new(fut: Post<T>, cbmail: Mailbox<Thunk<'static, Promiseval<T>>>) -> Promise<T> {
+    fn new(fut: Post<T>, cbmail: Mailbox<Thunk<'static, Option<T>>>) -> Promise<T> {
         Promise {
             inner: Arc::new(Mutex::new(PromiseInner::with_future(fut))),
             cbmail: cbmail,
@@ -531,7 +507,7 @@ impl<T: Send> Promise<T> {
     }
 
     // Set the value on the inner promise
-    fn set_inner(&mut self, v: Promiseval<T>) {
+    fn set_inner(&mut self, v: Option<T>) {
         use PromiseInner::*;
 
         // check for an existing callback and use it
@@ -542,7 +518,7 @@ impl<T: Send> Promise<T> {
 
             match mem::replace(&mut *inner, Empty) {
                 Future { future, waiter } => {
-                    if let Promiseval::Fulfilled(v) = v {
+                    if let Some(v) = v {
                         let _ = future.post(v); // discard value if future is gone
                     };
                     if let Some(notify) = waiter {
@@ -557,7 +533,7 @@ impl<T: Send> Promise<T> {
 
     /// Fulfill the `Promise` by resolving the corresponding `Future` with a value.
     pub fn set(mut self, v: T) {
-        self.set_inner(Promiseval::Fulfilled(v))
+        self.set_inner(Some(v))
     }
 
     /// Return true if the corresponding `Future` no longer exists, and so any value set would be
@@ -589,7 +565,7 @@ impl<T: Send> Promise<T> {
 
 impl<T: Send> Drop for Promise<T> {
     fn drop(&mut self) {
-        self.set_inner(Promiseval::Unfulfilled)
+        self.set_inner(None)
     }
 }
 
