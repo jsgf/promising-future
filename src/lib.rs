@@ -81,6 +81,8 @@
 #[cfg(feature = "threadpool")]
 extern crate threadpool;
 
+extern crate crossbeam;
+
 use std::sync::{Mutex, Arc, Weak};
 use std::mem;
 use std::fmt::{self, Formatter, Debug};
@@ -91,6 +93,7 @@ mod util;
 mod futurestream;
 mod mailbox;
 mod cvmx;
+mod inner;
 
 use fnbox::{FnBox, Thunk};
 use mailbox::{mailbox, Mailbox, Post};

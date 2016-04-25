@@ -15,5 +15,6 @@ unstable = [ "criterion", "criterion-macros" ]
 
 [dependencies]
 threadpool = { version = "0.2", optional = true }
+crossbeam = { version = "0.2" }
 criterion = { git = "https://github.com/japaric/criterion.rs.git", optional=true }
 criterion-macros = { git = "https://github.com/japaric/criterion.rs.git", path = "macros", optional=true }
