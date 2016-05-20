@@ -8,12 +8,14 @@ repository = "https://github.com/jsgf/promising-future"
 documentation = "https://jsgf.github.io/promising-future/index.html"
 readme = "README.md"
 keywords = ["async", "asynchronous", "promise", "future"]
+include = [ "Cargo.toml",
+            "src/**/*", "tests/**/*", "benches/**/*" ]
 
 [features]
 default = [ "threadpool" ]
-unstable = [ "criterion", "criterion-macros" ]
+#unstable = [ "criterion", "criterion-macros" ]
 
 [dependencies]
 threadpool = { version = "1.2", optional = true }
-criterion = { git = "https://github.com/japaric/criterion.rs.git", optional=true }
-criterion-macros = { git = "https://github.com/japaric/criterion.rs.git", path = "macros", optional=true }
+#criterion = { git = "https://github.com/japaric/criterion.rs.git", optional=true }
+#criterion-macros = { git = "https://github.com/japaric/criterion.rs.git", path = "macros", optional=true }
