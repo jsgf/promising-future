@@ -352,7 +352,7 @@ impl<T: Send> Future<T> {
         use FutureVal::*;
         let (fut, prom) = future_promise();
 
-        let func = move |val: Option<T>| func(val.into(), prom);
+        let func = move |val| func(val, prom);
 
         match self.val {
             Empty => func(None),
@@ -512,22 +512,27 @@ impl<T: Send> Promise<T> {
 
         // check for an existing callback and use it
         if let Ok(Some(cb)) = self.cbmail.take() {
-            cb.call_box(v.into())
+            cb.call_box(v)
         } else {
             let mut inner = self.inner.lock().expect("inner lock");
 
-            match mem::replace(&mut *inner, Empty) {
-                Future { future, waiter } => {
-                    if let Some(v) = v {
-                        let _ = future.post(v); // discard value if future is gone
-                    };
-                    if let Some(notify) = waiter {
-                        notify.notify();
-                    };
-                },
+            // re-check callback to see if it was set while we were taking the lock
+            if let Ok(Some(cb)) = self.cbmail.take() {
+                cb.call_box(v)
+            } else {
+                match mem::replace(&mut *inner, Empty) {
+                    Future { future, waiter } => {
+                        if let Some(v) = v {
+                            let _ = future.post(v); // discard value if future is gone
+                        };
+                        if let Some(notify) = waiter {
+                            notify.notify();
+                        };
+                    },
 
-                Empty => (),
-            };
+                    Empty => (),
+                }
+            }
         }
     }
 
