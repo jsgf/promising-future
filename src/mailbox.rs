@@ -1,25 +1,24 @@
-use std::fmt::{self, Debug};
-use std::sync::mpsc::{Sender, Receiver, TryRecvError, RecvError, SendError, channel};
+use std::sync::Arc;
+use std::mem;
+use cvmx::CvMx;
 
-pub struct Mailbox<T>(Receiver<Option<T>>);
-pub struct Post<T>(Sender<Option<T>>);
+#[derive(Debug, Copy, Clone)]
+struct Val<T> {
+    v: Option<T>,   // value, if set
+    dead: bool,     // either post or mail gone
+}
+
+type Inner<T> = CvMx<Val<T>>;
+
+#[derive(Debug)] pub struct Mailbox<T>(Arc<Inner<T>>);
+#[derive(Debug)] pub struct Post<T>(Arc<Inner<T>>);
 
 pub fn mailbox<T>() -> (Mailbox<T>, Post<T>) {
-    let (tx, rx) = channel();
+    let inner = Arc::new(CvMx::new(Val { v: None, dead: false }));
+    let mail = Mailbox(inner.clone());
+    let post = Post(inner);
 
-    (Mailbox(rx), Post(tx))
-}
-
-impl<T> Debug for Mailbox<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "Mailbox(...)")
-    }
-}
-
-impl<T> Debug for Post<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        write!(fmt, "Post(...)")
-    }
+    (mail, post)
 }
 
 impl<T> Mailbox<T> {
@@ -28,10 +27,11 @@ impl<T> Mailbox<T> {
     /// Take the value, if it has one. It will only return the value once, and return
     /// and None thereafter.
     pub fn take(&mut self) -> Result<Option<T>, ()> {
-        match self.0.try_recv() {
-            Ok(v) => Ok(v),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) => Err(()),
+        let mut inner = self.0.mx.lock().unwrap();
+
+        match mem::replace(&mut inner.v, None) {
+            None if inner.dead => Err(()),
+            v => Ok(v)
         }
     }
 
@@ -39,13 +39,22 @@ impl<T> Mailbox<T> {
     ///
     /// Returns `Ok` when it has a value, or `Err` if the `Post` has gone without posting a value.
     pub fn wait(self) -> Result<T, ()> {
-        loop {
-            match self.0.recv() {
-                Ok(Some(v)) => return Ok(v),
-                Ok(None) => (),
-                Err(RecvError) => return Err(()),
-            }
+        let mut inner = self.0.mx.lock().unwrap();
+
+        while !inner.dead && inner.v.is_none() {
+            inner = self.0.cv.wait(inner).unwrap()
         }
+
+        match mem::replace(&mut inner.v, None) {
+            None => { assert!(inner.dead); Err(()) },
+            Some(v) => Ok(v),
+        }
+    }
+}
+
+impl<T> Drop for Mailbox<T> {
+    fn drop(&mut self) {
+        self.0.mx.lock().unwrap().dead = true;
     }
 }
 
@@ -54,9 +63,15 @@ impl<T> Post<T> {
     ///
     /// The value is lost if the `Mailbox` has gone.
     pub fn post(self, val: T) -> Result<(), T> {
-        match self.0.send(Some(val)) {
-            Ok(()) => Ok(()),
-            Err(SendError(v)) => Err(v.unwrap()),
+        let mut inner = self.0.mx.lock().unwrap();
+
+        if inner.dead {
+            Err(val)
+        } else {
+            inner.v = Some(val);
+            self.0.cv.notify_one();
+            inner.dead = true;      // mark dead under lock
+            Ok(())
         }
     }
 
@@ -64,7 +79,15 @@ impl<T> Post<T> {
     ///
     /// If this returns true, then any `post` will simply lose the value.
     pub fn isdead(&self) -> bool {
-        self.0.send(None).is_err()
+        self.0.mx.lock().unwrap().dead
+    }
+}
+
+impl<T> Drop for Post<T> {
+    fn drop(&mut self) {
+        let mut inner = self.0.mx.lock().unwrap();
+        inner.dead = true;
+        self.0.cv.notify_one();
     }
 }
 
@@ -111,14 +134,9 @@ mod tests {
 
     #[test]
     fn boxdead() {
-        {
-            let (_, p) = mailbox::<u32>();
-            assert!(p.isdead());
-        }
-        {
-            let (_, p) = mailbox();
-            assert_eq!(p.post(123), Err(123));
-        }
+        let (_, p) = mailbox();
+        assert!(p.isdead());
+        assert_eq!(p.post(123), Err(123))
     }
 
     #[test]
