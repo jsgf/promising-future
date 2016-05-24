@@ -108,6 +108,7 @@ pub enum Pollresult<T> {
     Resolved(Option<T>),
 }
 
+#[doc(hidden)]
 pub enum Inner<T> {
     Empty,                                  // No value yet
     Gone,                                   // Future has gone away, no point setting value
@@ -143,7 +144,9 @@ impl<T: Debug> Debug for Inner<T> {
 ///
 /// It is typically created in a pair with a `Promise` using the function `future_promise()`.
 pub enum Future<T> {
+    #[doc(hidden)]
     Const(Option<T>),
+    #[doc(hidden)]
     Prom(Arc<CvMx<Inner<T>>>),
 }
 
