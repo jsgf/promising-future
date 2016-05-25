@@ -87,7 +87,7 @@ impl<T: Send> FutureStream<T> {
 
         inner.pending += 1;
         // If `tx.send()` fails, then it just means the waiter/FutureStream has gone away
-        fut.callback_inner(move |v| { let _ = tx.send(v); })
+        fut.callback_unit(move |v| { let _ = tx.send(v); })
     }
 
     /// Return number of outstanding `Future`s.

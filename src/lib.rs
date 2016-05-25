@@ -352,12 +352,15 @@ impl<T> Future<T> {
 
         let func = move |val| func(val, prom);
 
-        self.callback_inner(func);
+        self.callback_unit(func);
 
         fut
     }
 
-    fn callback_inner<F>(mut self, func: F)
+    /// Set a callback which returns `()`
+    ///
+    /// Set a callback with a closure which returns nothing, so its only useful for its side-effects.
+    pub fn callback_unit<F>(mut self, func: F)
         where F: FnOnce(Option<T>) + Send + 'static
     {
         use Inner::*;
