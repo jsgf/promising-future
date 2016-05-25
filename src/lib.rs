@@ -166,6 +166,7 @@ impl<T> Future<T> {
     ///    _ => panic!("unexpected result"),
     /// }
     /// ```
+    #[inline]
     pub fn with_value(v: T) -> Future<T> {
         Future::Const(Some(v))
     }
@@ -181,6 +182,7 @@ impl<T> Future<T> {
     ///    _ => panic!("unexpected result"),
     /// }
     /// ```
+    #[inline]
     pub fn never() -> Future<T> {
         Future::Const(None)
     }
@@ -283,11 +285,19 @@ impl<T> Future<T> {
     /// assert_eq!(fut.value(), Some(124))
     /// ```
     #[inline]
-    pub fn then_opt<F, U>(self, func: F) -> Future<U>
+    pub fn then_opt<F, U>(mut self, func: F) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static,
               U: Send + 'static
     {
-        self.callback(move |v, p| if let Some(r) = func(v) { p.set(r) })
+        use Future::*;
+
+        match self {
+            Const(ref mut v) => {
+                let v = mem::replace(v, None);
+                Future::from(func(v))
+            },
+            Prom(_) => self.callback(move |v, p| if let Some(r) = func(v) { p.set(r) }),
+        }
     }
 
     /// Set synchronous callback
