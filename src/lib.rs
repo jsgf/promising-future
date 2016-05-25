@@ -91,7 +91,7 @@ mod util;
 mod futurestream;
 mod cvmx;
 
-use fnbox::{FnBox, Thunk};
+use fnbox::Thunk;
 use cvmx::CvMx;
 
 pub use spawner::{Spawner, ThreadSpawner};
