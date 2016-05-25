@@ -81,18 +81,15 @@
 #[cfg(feature = "threadpool")]
 extern crate threadpool;
 
-use std::sync::Arc;
-use std::mem;
-use std::fmt::{self, Formatter, Debug};
+mod inner;
+mod future;
+mod promise;
 
 mod fnbox;
 mod spawner;
 mod util;
 mod futurestream;
 mod cvmx;
-
-use fnbox::Thunk;
-use cvmx::CvMx;
 
 pub use spawner::{Spawner, ThreadSpawner};
 pub use util::{any, all, all_with};
@@ -108,33 +105,12 @@ pub enum Pollresult<T> {
     Resolved(Option<T>),
 }
 
-#[doc(hidden)]
-pub enum Inner<T> {
-    Empty,                                  // No value yet
-    Gone,                                   // Future has gone away, no point setting value
-    Val(Option<T>),                         // Resolved value, if any
-    Callback(Thunk<'static, Option<T>>),    // callback
-}
-
-impl<T> Inner<T> {
-    fn new() -> Inner<T> { Inner::Empty }
-
-    fn canceled(&self) -> bool {
-        if let &Inner::Gone = self { true } else { false }
-    }
-}
-
-impl<T: Debug> Debug for Inner<T> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        use Inner::*;
-
-        let state = match self {
-            &Empty => "Empty".into(),
-            &Val(ref v) => format!("Val({:?})", v),
-            &Gone => "Gone".into(),
-            &Callback(_) => "Callback(_)".into(),
-        };
-        write!(f, "{}", state)
+impl<T> From<future::Pollresult<T>> for Pollresult<T> {
+    fn from(res: future::Pollresult<T>) -> Self {
+        match res {
+            future::Pollresult::Unresolved(fut) => Pollresult::Unresolved(Future(fut)),
+            future::Pollresult::Resolved(v) => Pollresult::Resolved(v),
+        }
     }
 }
 
@@ -143,18 +119,22 @@ impl<T: Debug> Debug for Inner<T> {
 /// A `Future` represents an undetermined value. A corresponding `Promise` may set the value.
 ///
 /// It is typically created in a pair with a `Promise` using the function `future_promise()`.
-pub enum Future<T> {
-    #[doc(hidden)]
-    Const(Option<T>),
-    #[doc(hidden)]
-    Prom(Arc<CvMx<Inner<T>>>),
-}
+#[derive(Debug)]
+pub struct Future<T>(future::Future<T>);
+
+/// A box for resolving a `Future`.
+///
+/// A `Promise` is a write-once box which corresponds with a `Future` and may be used to resolve it.
+///
+/// A `Promise` is initially pending, and is completed once it is consumed, either by its `set`
+/// method, or by going out of scope. The former is "fulfilling" the `Promise`; the latter is
+/// leaving it "unfulfilled".
+///
+/// It may only be created in a pair with a `Future` using the function `future_promise()`.
+#[derive(Debug)]
+pub struct Promise<T>(promise::Promise<T>);
 
 impl<T> Future<T> {
-    fn new(inner: &Arc<CvMx<Inner<T>>>) -> Future<T> {
-        Future::Prom(inner.clone())
-    }
-
     /// Construct an already resolved `Future` with a value. It is equivalent to a `Future` whose
     /// `Promise` has already been fulfilled.
     ///
@@ -168,7 +148,7 @@ impl<T> Future<T> {
     /// ```
     #[inline]
     pub fn with_value(v: T) -> Future<T> {
-        Future::Const(Some(v))
+        Future(future::Future::with_value(v))
     }
 
     /// Construct a resolved `Future` which will never have a value; it is equivalent to a `Future`
@@ -184,7 +164,7 @@ impl<T> Future<T> {
     /// ```
     #[inline]
     pub fn never() -> Future<T> {
-        Future::Const(None)
+        Future(future::Future::never())
     }
 
     /// Test to see if the `Future` is resolved yet.
@@ -203,28 +183,9 @@ impl<T> Future<T> {
     ///   Pollresult::Resolved(Some(v)) => println!("resolved, value {}", v),
     /// }
     /// ```
-    pub fn poll(mut self) -> Pollresult<T> {
-        use Future::*;
-        use Inner::*;
-
-        let res = match self {
-            Const(ref mut v) => Some(v.take()),
-
-            Prom(ref mut inner) => {
-                let mut lk = inner.mx.lock().unwrap();
-
-                match mem::replace(&mut *lk, Empty) {
-                    Empty => None,
-                    Val(v) => Some(v),
-                    Callback(_) => panic!("callback in future"),
-                    Gone => panic!("future gone"),
-                }
-            }
-        };
-        match res {
-            Some(v) => Pollresult::Resolved(v),
-            None => Pollresult::Unresolved(self),
-        }
+    #[inline]
+    pub fn poll(self) -> Pollresult<T> {
+        Pollresult::from(self.0.poll())
     }
 
     /// Block until the `Future` is resolved.
@@ -244,24 +205,9 @@ impl<T> Future<T> {
     ///   None => println!("no value"),
     /// }
     /// ```
-    pub fn value(mut self) -> Option<T> {
-        use Future::*;
-        use Inner::*;
-
-        match self {
-            Const(ref mut v) => v.take(),
-            Prom(ref inner) => {
-                let mut lk = inner.mx.lock().unwrap();
-                loop {
-                    match mem::replace(&mut *lk, Empty) {
-                        Empty => lk = inner.cv.wait(lk).expect("cv wait"),
-                        Val(v) => return v,
-                        Callback(_) => panic!("future with callback"),
-                        Gone => panic!("future gone"),
-                    }
-                }
-            },
-        }
+    #[inline]
+    pub fn value(self) -> Option<T> {
+        self.0.value()
     }
 
     /// Set a synchronous callback to run in the Promise's context.
@@ -285,30 +231,23 @@ impl<T> Future<T> {
     /// assert_eq!(fut.value(), Some(124))
     /// ```
     #[inline]
-    pub fn then_opt<F, U>(mut self, func: F) -> Future<U>
+    pub fn then_opt<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static,
               U: Send + 'static
     {
-        use Future::*;
-
-        match self {
-            Const(ref mut v) => {
-                let v = mem::replace(v, None);
-                Future::from(func(v))
-            },
-            Prom(_) => self.callback(move |v, p| if let Some(r) = func(v) { p.set(r) }),
-        }
+        Future(self.0.then_opt(func))
     }
 
     /// Set synchronous callback
     ///
     /// Simplest form of callback. This is only called if the promise
     /// is fulfilled, and may only allow a promise to be fulfilled.
+    #[inline]
     pub fn then<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(T) -> U + Send + 'static,
               U: Send + 'static
     {
-        self.then_opt(move |v| v.map(func))
+        Future(self.0.then(func))
     }
 
     /// Set a callback to run in the `Promise`'s context.
@@ -344,40 +283,23 @@ impl<T> Future<T> {
     /// prom.set(1);
     /// assert_eq!(fut.value(), Some(124))
     /// ```
+    #[inline]
     pub fn callback<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>, Promise<U>) + Send + 'static,
               U: Send + 'static
     {
-        let (fut, prom) = future_promise();
-
-        let func = move |val| func(val, prom);
-
-        self.callback_unit(func);
-
-        fut
+        let func = move |v, p| func(v, Promise(p));
+        Future(self.0.callback(func))
     }
 
     /// Set a callback which returns `()`
     ///
     /// Set a callback with a closure which returns nothing, so its only useful for its side-effects.
-    pub fn callback_unit<F>(mut self, func: F)
+    #[inline]
+    pub fn callback_unit<F>(self, func: F)
         where F: FnOnce(Option<T>) + Send + 'static
     {
-        use Inner::*;
-
-        match self {
-            Future::Const(ref mut v) => func(v.take()),
-
-            Future::Prom(ref mut inner) => {
-                let mut lk = inner.mx.lock().unwrap();
-                match mem::replace(&mut *lk, Empty) {
-                    Empty => *lk = Callback(Box::new(func) as Thunk<'static, Option<T>>),
-                    Val(v) => func(v),
-                    Callback(_) => panic!("already have callback"),
-                    Gone => panic!("future gone"),
-                };
-            },
-        }
+        self.0.callback_unit(func)
     }
 }
 
@@ -394,39 +316,22 @@ impl<T: Send> Future<T> {
     pub fn chain<F, U>(self, func: F) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, T: 'static, U: Send + 'static
     {
-        self.chain_with(func, &ThreadSpawner)
+        Future(self.0.chain(func))
     }
 
     /// As with `chain`, but pass a `Spawner` to control how the thread is created.
+    #[inline]
     pub fn chain_with<F, U, S>(self, func: F, spawner: &S) -> Future<U>
         where F: FnOnce(Option<T>) -> Option<U> + Send + 'static, T: 'static, U: Send + 'static, S: Spawner
     {
-        let (f, p) = future_promise();
-
-        spawner.spawn(move || if let Some(r) = func(self.value()) { p.set(r) });
-
-        f
+        Future(self.0.chain_with(func, spawner))
     }
 }
 
-impl<T> Drop for Future<T> {
-    fn drop(&mut self) {
-        if let &mut Future::Prom(ref mut inner) = self {
-            let mut lk = inner.mx.lock().expect("lock");
-
-            if let &Inner::Empty = &*lk {
-                *lk = Inner::Gone;
-            }
-        }
-    }
-}
 
 impl<T> From<Option<T>> for Future<T> {
     fn from(v: Option<T>) -> Future<T> {
-        match v {
-            None => Future::never(),
-            Some(v) => Future::with_value(v),
-        }
+        Future(future::Future::from(v))
     }
 }
 
@@ -453,54 +358,11 @@ impl<T> Iterator for FutureIter<T> {
     }
 }
 
-impl<T: Debug> Debug for Future<T> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        use Future::*;
-
-        let state = match self {
-            &Const(ref v) => format!("Const({:?})", v),
-            &Prom(ref inner) => {
-                let lk = inner.mx.lock().unwrap();
-                format!("Prom({:?})", *lk)
-            },
-        };
-        write!(f, "Future({}))", state)
-    }
-}
-
-/// A box for resolving a `Future`.
-///
-/// A `Promise` is a write-once box which corresponds with a `Future` and may be used to resolve it.
-///
-/// A `Promise` is initially pending, and is completed once it is consumed, either by its `set`
-/// method, or by going out of scope. The former is "fulfilling" the `Promise`; the latter is
-/// leaving it "unfulfilled".
-///
-/// It may only be created in a pair with a `Future` using the function `future_promise()`.
-pub struct Promise<T>(Arc<CvMx<Inner<T>>>);
-
 impl<T> Promise<T> {
-    fn new(inner: Arc<CvMx<Inner<T>>>) -> Promise<T> {
-        Promise(inner)
-    }
-
-    // Set the value on the inner promise
-    fn set_inner(&mut self, v: Option<T>) {
-        use Inner::*;
-
-        let mut lk = self.0.mx.lock().unwrap();
-
-        match mem::replace(&mut *lk, Gone) {
-            Gone => (),
-            Empty => { *lk = Val(v); self.0.cv.notify_one() },
-            v@Val(_) => *lk = v,            // we may get second set from Drop
-            Callback(cb) => cb.call_box(v),
-        }
-    }
-
     /// Fulfill the `Promise` by resolving the corresponding `Future` with a value.
-    pub fn set(mut self, v: T) {
-        self.set_inner(Some(v))
+    #[inline]
+    pub fn set(self, v: T) {
+        self.0.set(v)
     }
 
     /// Return true if the corresponding `Future` no longer exists, and so any value set would be
@@ -525,20 +387,9 @@ impl<T> Promise<T> {
     /// // ...
     /// mem::drop(fut);
     /// ```
+    #[inline]
     pub fn canceled(&self) -> bool {
-        self.0.mx.lock().unwrap().canceled()
-    }
-}
-
-impl<T> Drop for Promise<T> {
-    fn drop(&mut self) {
-        self.set_inner(None)
-    }
-}
-
-impl<T: Debug> Debug for Promise<T> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "Promise({:?})", *self.0.mx.lock().unwrap())
+        self.0.canceled()
     }
 }
 
@@ -554,10 +405,8 @@ impl<T: Debug> Debug for Promise<T> {
 /// # use promising_future::{Future, future_promise};
 /// let (fut, prom) = future_promise::<i32>();
 /// ```
+#[inline]
 pub fn future_promise<T>() -> (Future<T>, Promise<T>) {
-    let inner = Arc::new(CvMx::new(Inner::new()));
-    let f = Future::new(&inner);
-    let p = Promise::new(inner);
-
-    (f, p)
+    let (f, p) = future::future_promise();
+    (Future(f), Promise(p))
 }
