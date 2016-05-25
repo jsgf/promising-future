@@ -5,15 +5,6 @@ use std::mem;
 use cvmx::CvMx;
 use inner::Inner;
 
-/// A box for resolving a `Future`.
-///
-/// A `Promise` is a write-once box which corresponds with a `Future` and may be used to resolve it.
-///
-/// A `Promise` is initially pending, and is completed once it is consumed, either by its `set`
-/// method, or by going out of scope. The former is "fulfilling" the `Promise`; the latter is
-/// leaving it "unfulfilled".
-///
-/// It may only be created in a pair with a `Future` using the function `future_promise()`.
 pub struct Promise<T>(Arc<CvMx<Inner<T>>>);
 
 impl<T> Promise<T> {

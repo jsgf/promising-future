@@ -18,11 +18,6 @@ pub enum Pollresult<T> {
     Resolved(Option<T>),
 }
 
-/// An undetermined value.
-///
-/// A `Future` represents an undetermined value. A corresponding `Promise` may set the value.
-///
-/// It is typically created in a pair with a `Promise` using the function `future_promise()`.
 pub enum Future<T> {
     Const(Option<T>),
     Prom(Arc<CvMx<Inner<T>>>),
