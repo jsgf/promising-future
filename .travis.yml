@@ -31,5 +31,3 @@ script:
 after_success:
 - travis-cargo --only stable doc-upload
 - travis-cargo coveralls --no-sudo --verify
-
-# - if [ "$TRAVIS_RUST_VERSION" = stable ]; then ./.travis-update-gh-pages.sh || echo Update pages failed $?; fi
