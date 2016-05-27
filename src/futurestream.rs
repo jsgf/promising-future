@@ -18,7 +18,7 @@ use cvmx::CvMx;
 /// May be cloned and the clones passed to other threads so that `Future`s may be added from multiple
 /// threads.
 #[derive(Clone)]
-pub struct FutureStream<T: Send> {
+pub struct FutureStream<T> {
     tx: Sender<Option<T>>,                  // values from Promise
     inner: Arc<CvMx<FutureStreamInner<T>>>, // set of waited-for futures
 }
@@ -56,17 +56,17 @@ pub struct FutureStream<T: Send> {
 ///    // ...
 /// }
 /// ```
-pub struct FutureStreamWaiter<'a, T: Send + 'a> {
+pub struct FutureStreamWaiter<'a, T: 'a> {
     fs: &'a FutureStream<T>,
     rx: Option<Receiver<Option<T>>>,        // Option so that Drop can remove it
 }
 
-struct FutureStreamInner<T: Send> {
+struct FutureStreamInner<T> {
     pending: usize,
     rx: Option<Receiver<Option<T>>>,        // value receiver (if not passed to a waiter)
 }
 
-impl<T: Send> FutureStream<T> {
+impl<T> FutureStream<T> {
     pub fn new() -> FutureStream<T> {
         let (tx, rx) = channel();
         let inner = FutureStreamInner {
@@ -81,7 +81,7 @@ impl<T: Send> FutureStream<T> {
     }
 
     /// Add a `Future` to the stream.
-    pub fn add(&self, fut: Future<T>) where T: 'static {
+    pub fn add(&self, fut: Future<T>) where T: Send + 'static {
         let mut inner = self.inner.mx.lock().unwrap();
         let tx = self.tx.clone();
 
@@ -137,7 +137,7 @@ impl<T: Send> FutureStream<T> {
     }
 }
 
-impl<'fs, T: Send> FutureStreamWaiter<'fs, T> {
+impl<'fs, T> FutureStreamWaiter<'fs, T> {
     fn new(fs: &'fs FutureStream<T>, rx: Receiver<Option<T>>) -> FutureStreamWaiter<'fs, T> {
         FutureStreamWaiter { fs: fs, rx: Some(rx) }
     }
@@ -176,7 +176,7 @@ impl<'fs, T: Send> FutureStreamWaiter<'fs, T> {
     }
 }
 
-impl<'fs, T: Send> Drop for FutureStreamWaiter<'fs, T> {
+impl<'fs, T> Drop for FutureStreamWaiter<'fs, T> {
     fn drop(&mut self) {
         // Return notifications to FutureStream
         self.fs.return_waiter(self.rx.take().unwrap())
@@ -186,16 +186,16 @@ impl<'fs, T: Send> Drop for FutureStreamWaiter<'fs, T> {
 /// Iterator for completed `Future`s in a `FutureStream`. The iterator incrementally returns values
 /// from resolved `Future`s, blocking while there are no unresolved `Future`s. `Future`s which
 /// resolve to no value are discarded.
-pub struct FutureStreamIter<'a, T: Send + 'a>(FutureStreamWaiter<'a, T>);
+pub struct FutureStreamIter<'a, T: 'a>(FutureStreamWaiter<'a, T>);
 
-impl<'fs, T: Send + 'fs> IntoIterator for FutureStreamWaiter<'fs, T> {
+impl<'fs, T: 'fs> IntoIterator for FutureStreamWaiter<'fs, T> {
     type Item = T;
     type IntoIter = FutureStreamIter<'fs, T>;
 
     fn into_iter(self) -> Self::IntoIter { FutureStreamIter(self) }
 }
 
-impl<'a, T: Send + 'a> Iterator for FutureStreamIter<'a, T> {
+impl<'a, T: 'a> Iterator for FutureStreamIter<'a, T> {
     type Item = T;
 
     // Get next Future resolved with value, if any
@@ -215,7 +215,7 @@ impl<'a, T: Send + 'a> Iterator for FutureStreamIter<'a, T> {
     }
 }
 
-impl<'a, T: Send + 'a> IntoIterator for &'a FutureStream<T> {
+impl<'a, T: 'a> IntoIterator for &'a FutureStream<T> {
     type Item = T;
     type IntoIter = FutureStreamIter<'a, T>;
 
