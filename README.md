@@ -15,7 +15,7 @@ While this could be seen as a "yet another" crate, the API both
 simpler and more general than other implementations of Futures, and
 more easily composable.
 
-Documentation is available [here](https://jsgf.github.io/promising-future/doc/promising_future/index.html).
+Documentation is available [here](https://jsgf.github.io/promising-future/promising_future/index.html).
 
 ## License
 
