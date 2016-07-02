@@ -23,6 +23,34 @@ pub enum Future<T> {
     Prom(Arc<CvMx<Inner<T>>>),
 }
 
+fn poll_val<T>(inner: &CvMx<Inner<T>>) -> Result<Option<T>, ()> {
+    use inner::Inner::*;
+
+    let mut lk = inner.mx.lock().expect("inner lock");
+
+    match mem::replace(&mut *lk, Empty) {
+        Empty => Err(()),
+        Val(v) => Ok(v),
+        Callback(_) => panic!("future with callback"),
+        Gone => panic!("future gone"),
+    }
+}
+
+fn wait_val<T>(inner: &CvMx<Inner<T>>) -> Option<T> {
+    use inner::Inner::*;
+
+    let mut lk = inner.mx.lock().expect("inner lock");
+
+    loop {
+        match mem::replace(&mut *lk, Empty) {
+            Empty => lk = inner.cv.wait(lk).expect("cv wait"),
+            Val(v) => return v,
+            Callback(_) => panic!("future with callback"),
+            Gone => panic!("future gone"),
+        }
+    }
+}
+
 impl<T> Future<T> {
     pub fn new(inner: &Arc<CvMx<Inner<T>>>) -> Future<T> {
         Future::Prom(inner.clone())
@@ -78,25 +106,37 @@ impl<T> Future<T> {
     /// ```
     pub fn poll(mut self) -> Pollresult<T> {
         use self::Future::*;
-        use inner::Inner::*;
 
         let res = match self {
-            Const(ref mut v) => Some(v.take()),
+            Const(ref mut v) => Ok(v.take()),
+            Prom(ref mut inner) => poll_val(inner),
+        };
+        match res {
+            Ok(v) => Pollresult::Resolved(v),
+            Err(()) => Pollresult::Unresolved(self),
+        }
+    }
 
-            Prom(ref mut inner) => {
-                let mut lk = inner.mx.lock().unwrap();
+    pub fn poll_ref(&mut self) -> Result<Option<&T>, ()> {
+        use self::Future::*;
 
-                match mem::replace(&mut *lk, Empty) {
-                    Empty => None,
-                    Val(v) => Some(v),
-                    Callback(_) => panic!("callback in future"),
-                    Gone => panic!("future gone"),
+        // If `Future` is a `Prom` then get a value and convert to `Const`
+        let newval = match self {
+            &mut Const(_) => None,
+            &mut Prom(ref mut inner) => {
+                match poll_val(inner) {
+                    Ok(v) => Some(Const(v)),
+                    Err(()) => None,
                 }
             }
         };
-        match res {
-            Some(v) => Pollresult::Resolved(v),
-            None => Pollresult::Unresolved(self),
+        if let Some(v) = newval {
+            *self = v;
+        }
+
+        match self {
+            &mut Const(ref v) => Ok(v.as_ref()),
+            &mut Prom(_) => Err(()),
         }
     }
 
@@ -119,21 +159,27 @@ impl<T> Future<T> {
     /// ```
     pub fn value(mut self) -> Option<T> {
         use self::Future::*;
-        use inner::Inner::*;
 
         match self {
             Const(ref mut v) => v.take(),
-            Prom(ref inner) => {
-                let mut lk = inner.mx.lock().unwrap();
-                loop {
-                    match mem::replace(&mut *lk, Empty) {
-                        Empty => lk = inner.cv.wait(lk).expect("cv wait"),
-                        Val(v) => return v,
-                        Callback(_) => panic!("future with callback"),
-                        Gone => panic!("future gone"),
-                    }
-                }
-            },
+            Prom(ref inner) => wait_val(inner),
+        }
+    }
+
+    pub fn value_ref(&mut self) -> Option<&T> {
+        use self::Future::*;
+
+        let newval = match self {
+            &mut Const(_) => None,
+            &mut Prom(ref inner) => Some(Const(wait_val(inner))),
+        };
+        if let Some(v) = newval {
+            *self = v;
+        }
+
+        match self {
+            &mut Prom(..) => panic!("unexpected Prom"),
+            &mut Const(ref v) => v.as_ref(),
         }
     }
 

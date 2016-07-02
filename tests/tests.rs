@@ -41,6 +41,28 @@ fn poll() {
 }
 
 #[test]
+fn poll_ref() {
+    let (mut fut, prom) = future_promise();
+
+    match fut.poll_ref() {
+        Err(()) => (),
+        Ok(_) => panic!("expected Err"),
+    };
+
+    prom.set(1);
+
+    match fut.poll_ref() {
+        Err(()) => panic!("expected Ok"),
+        Ok(v) => assert_eq!(v, Some(&1)),
+    }
+
+    match fut.poll() {
+        Unresolved(_) => panic!("expected resolved"),
+        Resolved(v) => assert_eq!(v, Some(1)),
+    }
+}
+
+#[test]
 fn wait() {
     let (fut, prom) = future_promise();
 
@@ -49,6 +71,21 @@ fn wait() {
         prom.set(1);
     });
 
+    assert_eq!(fut.value(), Some(1));
+
+    let _ = t.join();
+}
+
+#[test]
+fn wait_ref() {
+    let (mut fut, prom) = future_promise();
+
+    let t = thread::spawn(|| {
+        sleep_ms(100);
+        prom.set(1);
+    });
+
+    assert_eq!(fut.value_ref(), Some(&1));
     assert_eq!(fut.value(), Some(1));
 
     let _ = t.join();

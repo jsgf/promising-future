@@ -188,6 +188,23 @@ impl<T> Future<T> {
         Pollresult::from(self.0.poll())
     }
 
+    /// Non-destructively poll a `Future`s value.
+    ///
+    /// If the `Future` has been resolved, returns `Ok` with `Some` value (or `None` if unfulfilled). Otherwise
+    /// returns `Err(())`.
+    ///
+    /// TODO: Reuse `Pollresult` with type param for `Future`/`&Future`?
+    ///
+    /// ```
+    /// # use promising_future::Future;
+    /// let mut fut = Future::with_value(123);
+    /// assert_eq!(fut.poll_ref(), Ok(Some(&123)))
+    /// ```
+    #[inline]
+    pub fn poll_ref(&mut self) -> Result<Option<&T>, ()> {
+        self.0.poll_ref()
+    }
+
     /// Block until the `Future` is resolved.
     ///
     /// If the `Future` is not yet resolved, it will block until the corresponding `Promise` is
@@ -208,6 +225,16 @@ impl<T> Future<T> {
     #[inline]
     pub fn value(self) -> Option<T> {
         self.0.value()
+    }
+
+    /// Non-destructively get a reference to the `Future`s value.
+    ///
+    /// Wait until a `Future` is resolved - if necessary - and return a reference to the value.
+    /// The lifetime is tied to the `Future`s lifetime. Use `value()` to take ownership of the value
+    /// and consume the `Future`.
+    #[inline]
+    pub fn value_ref(&mut self) -> Option<&T> {
+        self.0.value_ref()
     }
 
     /// Set a synchronous callback to run in the Promise's context.
